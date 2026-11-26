@@ -46,6 +46,30 @@ function journalButton(parent, text, callback, cls = '') {
   el.addEventListener('click', () => Promise.resolve(callback()).catch(e => { console.error(e); new journalOb.Notice(e.message || '操作失败'); }));
   return el;
 }
+class JournalSearchModal extends journalOb.SuggestModal {
+  constructor(view) {
+    super(view.app);
+    this.view = view;
+    this.setPlaceholder('按日期或标题查找日记');
+    this.emptyStateText = '没有找到日记';
+    this.modalEl.classList.add('journal-search-paper');
+    this.rows = view.plugin.repo.listAll().sort((a,b) => b.date.localeCompare(a.date)).map(ref => {
+      const file = view.app.vault.getAbstractFileByPath(ref.path);
+      const meta = file && view.app.metadataCache.getFileCache(file)?.frontmatter;
+      const title = ref.path === view.path ? view.model.title : String(meta?.['标题'] || '');
+      return {ref, title};
+    });
+  }
+  getSuggestions(input) {
+    const query = input.trim().toLowerCase();
+    return this.rows.filter(({ref,title}) => (ref.date + ' ' + title).toLowerCase().includes(query));
+  }
+  renderSuggestion({ref,title}, el) {
+    el.createEl('strong', {text:ref.date});
+    if (title) el.createSpan({text:'　' + title});
+  }
+  async onChooseSuggestion({ref}) { await this.view.openPath(ref.path); }
+}
 class PaperJournalView extends journalOb.ItemView {
   constructor(leaf, plugin) {
     super(leaf); this.plugin = plugin; this.path = ''; this.source = ''; this.dirty = false; this.revision = 0; this.savePromise = null; this.timer = null; this.navigating = false; this.loadToken = 0;
@@ -60,15 +84,20 @@ class PaperJournalView extends journalOb.ItemView {
   }
   async onOpen() {
     const root = this.contentEl || this.containerEl.children[1];
-    let width = 0;
-    const observer = new ResizeObserver(() => {
-      if (root.clientWidth === width) return;
-      width = root.clientWidth;
-      for (const [i, area] of (this.areas || []).entries()) {
-        area.style.height = 'auto'; area.style.height = Math.max(i === 0 ? 160 : 112, area.scrollHeight + 2) + 'px';
+    this.paperSizes = new Map();
+    this.paperObserver = new ResizeObserver(entries => {
+      for (const {target, contentRect} of entries) {
+        const entry = this.paperSizes.get(target);
+        if (entry && entry.width !== contentRect.width) {
+          entry.width = contentRect.width;
+          entry.fit();
+        }
       }
     });
-    observer.observe(root); this.register(() => observer.disconnect());
+    this.register(() => this.paperObserver.disconnect());
+    this.registerDomEvent(root.ownerDocument.fonts, 'loadingdone', () => {
+      for (const entry of this.paperSizes.values()) entry.fit();
+    });
     this.registerEvent(this.app.vault.on('modify', file => {
       if (file.path === this.path && !this.savePromise) {
         if (!this.dirty) void this.loadPath(this.path);
@@ -109,41 +138,70 @@ class PaperJournalView extends journalOb.ItemView {
   }
   render() {
     const root = this.contentEl || this.containerEl.children[1]; root.empty(); root.addClass('dwh-journal');
-    const top = root.createDiv({ cls: 'dwh-journal__toolbar' });
-    journalButton(top, '‹ 工作台', async () => { if (await this.flush()) await this.plugin.activateHome(); });
-    journalEl(top, 'span', 'dwh-journal__name', '我的日记');
-    const actions = top.createDiv({ cls: 'dwh-journal__actions' }); this.plugin.renderAppearance(actions);
+    this.paperObserver?.disconnect();
+    this.paperSizes?.clear();
     const layout = root.createDiv({ cls: 'dwh-journal__layout' });
     const aside = layout.createEl('aside', { cls: 'dwh-journal__aside' });
-    const asideHead = aside.createDiv({ cls: 'dwh-journal__aside-head' }); journalEl(asideHead, 'h2', '', '最近的日记');
-    journalButton(asideHead, '写今天', async () => { if (!await this.flush()) return; const f = await this.plugin.repo.createOrOpen(todayLocalDate()); await this.openPath(f.path); });
-    const search = aside.createEl('input', { cls: 'dwh-journal__search', attr: { placeholder: '按日期或标题查找', 'aria-label': '查找日记' } });
-    search.addEventListener('input', () => { this.search = search.value; void this.renderStack(); }); this.search = '';
+    const calendar=aside.createDiv({cls:'paper-journal-calendar'});
+    void renderHomeDiaryCard(calendar,this.plugin,async()=>{if(await this.flush())await this.plugin.activateCalendar();}).catch(e=>new journalOb.Notice(e.message));
     this.stack = aside.createDiv({ cls: 'dwh-journal__stack' });
-    journalButton(aside, '查看日历', async () => { if (await this.flush()) await this.plugin.activateCalendar(); });
     const paper = layout.createDiv({ cls: 'dwh-journal__paper' });
     const date = this.path.split('/').pop().replace(/\.md$/, '');
     const parsed = parseDateFromName(date, this.plugin.getSettings().diaryDateFormat);
     journalEl(paper, 'div', 'dwh-journal__date', parsed ? `${parsed.year}年${parsed.month}月${parsed.day}日  ${WEEKDAYS_ZH[weekdayOf(parsed)].replace('周', '星期')}` : date);
-    const titleLabel = paper.createEl('label', { cls: 'dwh-journal__title-label', text: '标题' });
+    const pageActions = paper.createDiv({cls:'journal-page-actions'});
+    const home = journalButton(pageActions, '', async () => {
+      if (await this.flush()) await this.plugin.activateHome();
+    }, 'journal-home-icon');
+    home.title = '回到工作台';
+    home.setAttribute('aria-label', home.title);
+    journalOb.setIcon(home, 'home');
+    const search = journalButton(pageActions, '', () => new JournalSearchModal(this).open(), 'journal-search-icon');
+    search.title = '搜索日记';
+    search.setAttribute('aria-label', '搜索日记');
+    journalOb.setIcon(search, 'search');
+    const titleLabel = paper.createEl('label', { cls: 'dwh-journal__title-label' });
     const title = titleLabel.createEl('input', { cls: 'dwh-journal__title', attr: { placeholder: '给今天起个标题', 'aria-label': '标题' } }); title.value = this.model.title;
     title.addEventListener('input', () => this.edit(() => { this.model.title = title.value; }));
     const meta = paper.createDiv({ cls: 'dwh-journal__meta' });
-    for (const [key, name, hint] of [['mood', '心情', '自己写下此刻的心情'], ['weather', '天气', '自己写，例如晴，有微风']]) {
+    for (const [key, name, hint] of [['mood', '心情', '写下心情'], ['weather', '天气', '写下天气']]) {
       const label = meta.createEl('label');
       label.createSpan({ cls: 'dwh-journal__meta-name', text: name + '：' });
       const input = label.createEl('input', { attr: { placeholder: hint, 'aria-label': name } }); input.value = this.model[key];
       input.addEventListener('input', () => this.edit(() => { this.model[key] = input.value; }));
     }
-    this.areas = [];
     JOURNAL_HEADINGS.forEach((heading, i) => {
       const block = paper.createEl('section', { cls: 'dwh-journal__section' });
-      const label = block.createEl('label', { text: heading });
-      const area = label.createEl('textarea', { cls: 'dwh-journal__writing', attr: { 'aria-label': heading, placeholder: '在这里写下……', spellcheck: 'false' } });
-      area.value = this.model.parts[i]; this.areas.push(area);
-      const size = () => { area.style.height = 'auto'; area.style.height = Math.max(i === 0 ? 160 : 112, area.scrollHeight + 2) + 'px'; };
-      area.addEventListener('input', () => { size(); this.edit(() => { this.model.parts[i] = area.value; }); });
-      requestAnimationFrame(size);
+      const head = block.createDiv({cls:'journal-segment-heading'});
+      head.createEl('span', {cls:'journal-segment-tab', text:heading});
+      const edit = journalButton(head, '编辑本段', () => this.openBlocks(i), 'ink-section-edit');
+      edit.setAttribute('aria-label', '编辑' + heading);
+      edit.title = '编辑本段';
+      const field = block.createDiv({cls:'journal-writing-field'});
+      const area = field.createEl('textarea', {cls:'dwh-journal__writing', attr:{
+        rows:'1', 'aria-label':heading, placeholder:'在这里写下……', spellcheck:'false'
+      }});
+      area.value = this.model.parts[i];
+      // The hidden copy wraps exactly like the editor, without collapsing the active input to measure it.
+      const measure = area.cloneNode(false);
+      measure.classList.add('journal-writing-measure');
+      measure.removeAttribute('aria-label');
+      measure.setAttribute('aria-hidden','true');
+      measure.inert = true;
+      field.appendChild(measure);
+      const fit = () => {
+        if (!field.clientWidth) return;
+        measure.value = area.value;
+        const height = measure.scrollHeight;
+        if (height > 0 && area.style.height !== height + 'px') area.style.setProperty('height', height + 'px', 'important');
+      };
+      fit();
+      this.paperSizes?.set(field, {width:field.clientWidth,fit});
+      this.paperObserver?.observe(field);
+      area.addEventListener('input', () => {
+        fit();
+        this.edit(() => { this.model.parts[i] = area.value; });
+      });
     });
     const foot = paper.createDiv({ cls: 'dwh-journal__footer' });
     this.prev = journalButton(foot, '‹ 上一篇', () => this.adjacent(1));
@@ -151,8 +209,22 @@ class PaperJournalView extends journalOb.ItemView {
     this.next = journalButton(foot, '下一篇 ›', () => this.adjacent(-1));
     const tools = root.createDiv({ cls: 'dwh-journal__tools' });
     journalButton(tools, '保存', () => this.flush());
-    journalButton(tools, '在原文中打开', async () => { if (!await this.flush()) return; const file = this.app.vault.getAbstractFileByPath(this.path); const leaf = this.app.workspace.getLeaf('tab'); await leaf.openFile(file, { active: true }); });
     journalButton(tools, '另存草稿', () => this.saveDraftAsFile());
+  }
+  async openBlocks(section=0) {
+    if (!await this.flush()) return;
+    const file=this.app.vault.getAbstractFileByPath(this.path);
+    if (!(file instanceof journalOb.TFile)) return;
+    const ws=this.app.workspace;
+    const leaf=ws.getLeavesOfType('markdown').find(l=>l.view.file?.path===file.path)||ws.getLeaf('tab');
+    await leaf.openFile(file,{active:true,state:{mode:'source',source:false}});
+    await ws.revealLeaf(leaf);
+    const editor=leaf.view.editor;
+    if (!editor) return;
+    const lines=editor.getValue().split(/\r?\n/);
+    const at=lines.findIndex(line=>/^##\s+/.test(line)&&journalSection(line)===section);
+    if(at>=0){const pos={line:Math.min(at+1,lines.length-1),ch:0};editor.setCursor(pos);editor.scrollIntoView({from:pos,to:pos},true);}
+    editor.focus();
   }
   async renderStack() {
     if (!this.stack || !this.path) return;
@@ -166,9 +238,8 @@ class PaperJournalView extends journalOb.ItemView {
     }));
     if (token !== this.stackToken) return;
     this.stack.empty();
-    const term = (this.search || '').trim().toLowerCase();
-    const shown = models.filter(Boolean).filter(x => !term || (x.ref.date + x.model.title).toLowerCase().includes(term));
-    const count = term ? shown.length : Math.max(7, this.plugin.getSettings().recentDiaryCount || 7);
+    const shown = models.filter(Boolean);
+    const count = Math.max(7, this.plugin.getSettings().recentDiaryCount || 7);
     for (const { ref, model, excerpt } of shown.slice(0, count)) {
       const card = journalButton(this.stack, '', () => this.openPath(ref.path), 'dwh-journal__sheet' + (ref.path === this.path ? ' is-selected' : ''));
       card.setAttribute('aria-current', ref.path === this.path ? 'page' : 'false');
@@ -227,101 +298,27 @@ class PaperJournalView extends journalOb.ItemView {
 async function installPaperJournal(plugin) {
   const base = plugin.manifest.dir || plugin.app.vault.configDir + '/plugins/' + plugin.manifest.id;
   const readJson = async (name, fallback) => { try { return JSON.parse(await plugin.app.vault.adapter.read(base + '/' + name)); } catch { return fallback; } };
-  plugin.journalPreferences = await readJson('appearance-preferences.json', { mode: 'light', palette: 'beige' });
   plugin.journalDrafts = await readJson('journal-drafts.json', {});
   plugin.saveJournalDrafts = () => plugin.app.vault.adapter.write(base + '/journal-drafts.json', JSON.stringify(plugin.journalDrafts, null, 2));
-  const media = window.matchMedia('(prefers-color-scheme: dark)');
-  plugin.journalPreferences = { mode: plugin.journalPreferences.mode === 'dark' || plugin.journalPreferences.mode === 'system' && media.matches ? 'dark' : 'light' };
-  plugin.applyAppearance = () => {
-    const prefs = plugin.journalPreferences;
-    const mode = prefs.mode;
-    document.body.dataset.dwhMode = mode === 'dark' ? 'dark' : 'light';
-    delete document.body.dataset.dwhPalette;
-  };
-  plugin.setAppearance = async (key, value) => {
-    if (key !== 'mode' || !['light','dark'].includes(value)) return;
-    plugin.journalPreferences = { mode: value }; plugin.applyAppearance();
-    const content = JSON.stringify(plugin.journalPreferences, null, 2);
-    plugin.appearanceSave = (plugin.appearanceSave || Promise.resolve()).catch(() => {}).then(() => plugin.app.vault.adapter.write(base + '/appearance-preferences.json', content));
-    await plugin.appearanceSave;
-  };
-  plugin.renderAppearance = parent => {
-    const control = parent.createDiv({ cls: 'dwh-appearance dwh-appearance--slider' });
-    const groups = [['mode', '外观', [['light','白色'],['dark','黑色']]]];
-    for (const [key, name, choices] of groups) {
-      const label = control.createDiv({ cls: 'dwh-appearance__slider-row' });
-      label.createSpan({ cls: 'dwh-appearance__label', text: name });
-      const range = label.createDiv({ cls: 'dwh-appearance__segment', attr: { role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuemax': '1', 'aria-label': key === 'mode' ? '外观模式' : '纸面配色', title: '拖动滑块或点击选项，也可用方向键调整' } });
-      range.setAttribute('role', 'slider'); range.setAttribute('tabindex', '0');
-      range.setAttribute('aria-valuemin', '0'); range.setAttribute('aria-valuemax', '1');
-      range.setAttribute('aria-label', key === 'mode' ? '外观模式' : '纸面配色');
-      range.dataset.pref = key;
-      const thumb = range.createDiv({ cls: 'dwh-appearance__thumb' });
-      const options = choices.map(choice => range.createSpan({ cls: 'dwh-appearance__option', text: choice[1] }));
-      let pointer = null, origin = 0, startIndex = 0, position = 0, dragging = false;
-      const names = () => choices.map(c => c[1]);
-      const setPosition = value => { position = Math.max(0, Math.min(choices.length - 1, value)); thumb.style.transform = `translateX(${position * 100}%)`; };
-      const update = () => {
-        const index = Math.max(0, choices.findIndex(c => c[0] === plugin.journalPreferences[key]));
-        if (!dragging) setPosition(index);
-        range.setAttribute('aria-valuenow', String(index)); range.setAttribute('aria-valuetext', names()[index]);
-        options.forEach((option, i) => { option.textContent = names()[i]; option.classList.toggle('is-selected', index === i); });
-      };
-      const preview = index => { plugin.journalPreferences[key] = choices[index][0]; plugin.applyAppearance(); };
-      const commit = index => {
-        dragging = false; range.classList.remove('is-dragging'); setPosition(index);
-        void plugin.setAppearance(key, choices[index][0]).catch(() => new journalOb.Notice('外观设置未能保存，请重试'));
-      };
-      const positionAt = x => {
-        const box = range.getBoundingClientRect(); const cell = (box.width - 6) / choices.length;
-        return Math.max(0, Math.min(choices.length - 1, (x - box.left - 3 - cell / 2) / cell));
-      };
-      range.addEventListener('pointerdown', e => {
-        if (e.button !== 0 || pointer !== null) return;
-        pointer = e.pointerId; origin = e.clientX;
-        startIndex = choices.findIndex(c => c[0] === plugin.journalPreferences[key]);
-        range.setPointerCapture(e.pointerId); range.focus();
-      });
-      range.addEventListener('pointermove', e => {
-        if (pointer !== e.pointerId || Math.abs(e.clientX - origin) < 4 && !dragging) return;
-        dragging = true; range.classList.add('is-dragging');
-        setPosition(positionAt(e.clientX)); preview(Math.round(position));
-      });
-      range.addEventListener('pointerup', e => {
-        if (pointer !== e.pointerId) return;
-        const index = Math.round(dragging ? position : positionAt(e.clientX));
-        pointer = null; range.releasePointerCapture(e.pointerId); commit(index);
-      });
-      const cancel = e => {
-        if (pointer !== e.pointerId) return;
-        pointer = null; dragging = false; range.classList.remove('is-dragging'); preview(Math.max(0,startIndex));
-      };
-      range.addEventListener('pointercancel', cancel); range.addEventListener('lostpointercapture', cancel);
-      range.addEventListener('keydown', e => {
-        if (pointer !== null) return;
-        let index = Number(range.getAttribute('aria-valuenow'));
-        if (['ArrowRight','ArrowUp'].includes(e.key)) index = Math.min(choices.length - 1,index+1);
-        else if (['ArrowLeft','ArrowDown'].includes(e.key)) index = Math.max(0,index-1);
-        else if (e.key === 'Home') index = 0;
-        else if (e.key === 'End') index = choices.length - 1;
-        else return;
-        e.preventDefault(); commit(index);
-      });
-      control.addEventListener('dwh-appearance-change', update); update();
+  document.body.dataset.dwhMode = 'dark';
+  delete document.body.dataset.dwhPalette;
+  const markDiaryEditors=()=>{
+    const folder=plugin.repo.folderPath()+'/';
+    for(const leaf of plugin.app.workspace.getLeavesOfType('markdown')){
+      const v=leaf.view, file=v.file;
+      const isDiary=!!file && file.path.startsWith(folder) && !!parseDateFromName(file.basename,plugin.getSettings().diaryDateFormat);
+      v.containerEl?.classList.toggle('ink-diary-editor',isDiary);
     }
   };
-  const apply = plugin.applyAppearance;
-  plugin.applyAppearance = () => {
-    apply();
-    document.querySelectorAll('.dwh-appearance--slider').forEach(el => el.dispatchEvent(new Event('dwh-appearance-change')));
-  };
-  plugin.applyAppearance();
+  for(const event of ['file-open','layout-change','active-leaf-change'])plugin.registerEvent(plugin.app.workspace.on(event,markDiaryEditors));
+  plugin.app.workspace.onLayoutReady(markDiaryEditors);
+  plugin.register(()=>document.querySelectorAll('.ink-diary-editor').forEach(el=>el.classList.remove('ink-diary-editor')));
   plugin.register(() => { delete document.body.dataset.dwhMode; delete document.body.dataset.dwhPalette; });
   plugin.registerView(JOURNAL_VIEW, leaf => new PaperJournalView(leaf, plugin));
   plugin.activateJournal = async path => {
     let leaf = plugin.app.workspace.getLeavesOfType(JOURNAL_VIEW)[0];
     if (!leaf) { leaf = plugin.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: JOURNAL_VIEW, active: true }); }
-    await leaf.view.openPath(path); await plugin.app.workspace.revealLeaf(leaf);
+    await plugin.app.workspace.revealLeaf(leaf); plugin.app.workspace.setActiveLeaf(leaf, {focus:true}); await leaf.loadIfDeferred?.(); if(path) await leaf.view.openPath(path);
   };
   plugin.repo.openDiary = async ref => plugin.activateJournal(ref.path);
   plugin.addCommand({ id: 'open-paper-journal', name: '打开纸张日记', callback: async () => { const f = await plugin.repo.createOrOpen(todayLocalDate()); await plugin.activateJournal(f.path); } });
@@ -331,26 +328,11 @@ async function installPaperJournal(plugin) {
 }
 const originalJournalOnload = WorkstationHomePlugin.prototype.onload;
 WorkstationHomePlugin.prototype.onload = async function () { await originalJournalOnload.call(this); await installPaperJournal(this); };
-const originalJournalHomeRender = WorkstationHomeView.prototype.render;
-WorkstationHomeView.prototype.render = function () {
-  originalJournalHomeRender.call(this);
-  if (this.api.renderAppearance) {
-    const content = this.contentEl || this.containerEl.children[1];
-    const hero = content.querySelector('.dwh-home__hero');
-    const title = content.querySelector('.dwh-home__title');
-    if (title) title.textContent = '纸间';
-    if (hero) this.api.renderAppearance(hero);
-    const workTitle = content.querySelector('.dwh-document-lines .dwh-panel__title');
-    if (workTitle) workTitle.textContent = '工作进展';
-    const inspirationTitle = content.querySelector('.dwh-inspiration .dwh-panel__title');
-    if (inspirationTitle) inspirationTitle.textContent = '灵感';
-  }
-};
 const originalPaperHomeDiary = renderHomeDiaryCard;
 renderHomeDiaryCard = async function (container, api, onOpenCalendar) {
   await originalPaperHomeDiary(container, api, onOpenCalendar);
   const title = container.querySelector('.dwh-panel__title');
-  if (title) title.textContent = '日历与日记';
+  if (title) title.textContent = '日记';
   const today = container.querySelector('.dwh-diary__today');
   const preview = container.querySelector('.dwh-diary__preview');
   const calendar = container.querySelector('.dwh-diary__mini-cal');
@@ -360,8 +342,17 @@ renderHomeDiaryCard = async function (container, api, onOpenCalendar) {
   body.appendChild(calendar);
   const sheet = body.createDiv({ cls: 'dwh-home-journal-preview' });
   sheet.appendChild(today); sheet.appendChild(preview);
-  if (foot) container.appendChild(foot);
+  if (container.classList.contains('paper-journal-calendar')) {
+    foot?.remove();
+    return;
+  }
+  if (foot) {
+    const write=today.querySelector('.dwh-diary__write');
+    if (write) foot.prepend(write);
+    container.appendChild(foot);
+  }
 };
 buildDefaultDiaryContent = date => journalNewContent(date);
 
-WorkstationHomeView.prototype.getDisplayText = function () { return "纸间"; };
+WorkstationHomeView.prototype.getDisplayText = function () { return "工作台"; };
+

@@ -1786,3 +1786,39 @@ body[data-dwh-mode]:is(:has(.dwh-home), :has(.dwh-journal), :has(.dwh-calendar))
   .dwh-journal__footer { gap: 2px; } .dwh-journal__footer .dwh-btn { padding: 6px; font-size: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { .dwh-journal * { transition: none !important; } }
+
+/* Content-sized diary sections */
+.dwh-journal .journal-writing-field { position:relative; min-width:0; }
+.dwh-journal .journal-writing-field > textarea.dwh-journal__writing {
+  box-sizing:border-box; display:block; width:100%; height:2em; min-height:0; max-height:none;
+  margin:0; padding:3px 0; border:0!important; field-sizing:fixed; overflow:hidden; resize:none;
+  font:400 clamp(16px,1.45vw,20px)/1.85 "DWH WenKai","KaiTi","Microsoft YaHei",serif;
+  letter-spacing:.015em; white-space:pre-wrap; overflow-wrap:break-word;
+}
+.dwh-journal .journal-writing-field > textarea.journal-writing-measure {
+  position:absolute; top:0; left:0; height:0!important; min-height:0!important;
+  visibility:hidden; pointer-events:none; transition:none!important;
+}
+@media (prefers-reduced-motion:no-preference) {
+  .dwh-journal .journal-writing-field > textarea:not(.journal-writing-measure) {
+    transition:height 155ms cubic-bezier(.2,.7,.25,1);
+  }
+}
+
+
+.dwh-chain-list { display:grid; gap:8px; }
+.dwh-chain-row { border-bottom:1px solid var(--jp-border,var(--background-modifier-border)); padding:7px 0 10px; min-width:0; }
+.dwh-chain-row:last-child {border-bottom:0;}
+.dwh-chain-title.dwh-btn {color:inherit; background:none; border:none; box-shadow:none; height:auto; padding:0; font:inherit; font-weight:600; white-space:normal; text-align:left; overflow-wrap:anywhere;}
+.dwh-chain-latest,.dwh-chain-history {white-space:pre-wrap; overflow-wrap:anywhere;}
+.dwh-chain-latest,.dwh-chain-muted {color:var(--jp-muted,var(--text-muted)); font-size:.92em;}
+.dwh-chain-actions,.dwh-chain-history {display:flex; gap:7px; align-items:baseline; flex-wrap:wrap; margin:6px 0;}
+.dwh-chain-actions .dwh-btn,.dwh-chain-history .dwh-btn {font-size:12px; padding:3px 8px;}
+.dwh-chain-actions details[open] {flex:1 1 100%;}
+.dwh-chain-actions summary {cursor:pointer; color:var(--jp-muted,var(--text-muted));font-size:12px;}
+.dwh-chain-history span {flex:1 1 55%;}
+.dwh-chain-capture,.dwh-chain-editor {width:100%;}
+.dwh-chain-actions input[type=search] {flex:1 1 145px; min-width:0;}
+body:has(.dwh-home) .dwh-home--paged:has(.dwh-chain-list) {overflow:auto;}
+body:has(.dwh-home) .dwh-home--paged .dwh-panel:has(.dwh-chain-list) {max-height:none;overflow:visible;}
+

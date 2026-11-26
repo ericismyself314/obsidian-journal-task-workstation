@@ -470,6 +470,7 @@ var DiaryRepository = class {
     if (existing instanceof import_obsidian.TFile) {
       return existing;
     }
+    if (compareLocalDate(date, todayLocalDate()) !== 0) return null;
     const content = buildDefaultDiaryContent(date, writeWeatherNote);
     const created = await this.app.vault.create(path, content);
     this.dirty = true;
@@ -477,6 +478,7 @@ var DiaryRepository = class {
   }
   async createAndOpen(date, target, writeWeatherNote) {
     const file = await this.createOrOpen(date, writeWeatherNote);
+    if (!file) return;
     await this.openDiary(
       { date: formatLocalDate(date), path: file.path, modifiedAt: file.stat.mtime },
       target
@@ -1333,49 +1335,76 @@ async function renderHomeDiaryCard(container, api, onOpenCalendar) {
   const previewEl = container.createDiv({ cls: "dwh-diary__preview" });
   void renderTodayPreview(previewEl, api, today);
   const calWrap = container.createDiv({ cls: "dwh-diary__mini-cal" });
-  calWrap.createDiv({ cls: "dwh-diary__cal-title", text: `${today.month}\u6708 ${today.year}` });
-  const grid = calWrap.createDiv({ cls: "dwh-diary__grid" });
-  for (const w of weekdayHeader(weekStart)) {
-    grid.createDiv({ cls: "dwh-diary__dw", text: w });
-  }
-  let festMap = /* @__PURE__ */ new Map();
-  try {
-    const holidays = await api.holidays.getHolidaysForMonth(
-      settings.holidayRegion,
-      today.year,
-      today.month
-    );
-    festMap = buildFestMap(holidays, today.year, today.month);
-  } catch {
-  }
-  const cells = buildMonthGrid(today.year, today.month, weekStart);
-  for (const cell of cells) {
-    const d = cell.date;
-    const dStr = formatLocalDate(d);
-    const classes = ["dwh-diary__cell"];
-    if (!cell.inCurrentMonth) classes.push("dwh-diary__cell--mute");
-    else if (isWeekend(d, weekStart)) classes.push("dwh-diary__cell--we");
-    if (dStr === todayStr) classes.push("dwh-diary__cell--today");
-    const el = grid.createDiv({ cls: classes.join(" ") });
-    el.createDiv({ cls: "dwh-diary__cnum", text: String(d.day) });
-    const fest = festMap.get(dStr);
-    if (fest) {
-      if (fest.ban) {
-        el.createDiv({ cls: "dwh-diary__ban", text: "\u73ED" });
-      } else if (fest.label) {
-        el.createDiv({ cls: "dwh-diary__fest", text: fest.label });
+  const diarySidebar = container.classList.contains("paper-journal-calendar");
+  const header = calWrap.createDiv({ cls: "journal-month-heading" });
+  const title = header.createDiv({ cls: "dwh-diary__cal-title" });
+  let shown = today;
+  let generation = 0;
+  async function showMonth(direction = 0) {
+    const ticket = ++generation;
+    shown = addMonths(shown, direction);
+    const month = shown;
+    const grid = calWrap.ownerDocument.createElement("div");
+    grid.className = "dwh-diary__grid";
+    if (direction) grid.classList.add(direction > 0 ? "journal-turn-next" : "journal-turn-prev");
+    for (const w of weekdayHeader(weekStart)) {
+      grid.createDiv({ cls: "dwh-diary__dw", text: w });
+    }
+    let festMap = /* @__PURE__ */ new Map();
+    try {
+      const holidays = await api.holidays.getHolidaysForMonth(
+        settings.holidayRegion,
+        month.year,
+        month.month
+      );
+      festMap = buildFestMap(holidays, month.year, month.month);
+    } catch {
+    }
+    const cells = buildMonthGrid(month.year, month.month, weekStart);
+    for (const cell of cells) {
+      const d = cell.date;
+      const dStr = formatLocalDate(d);
+      const classes = ["dwh-diary__cell"];
+      if (!cell.inCurrentMonth) classes.push("dwh-diary__cell--mute");
+      else if (isWeekend(d, weekStart)) classes.push("dwh-diary__cell--we");
+      if (dStr === todayStr) classes.push("dwh-diary__cell--today");
+      const el = grid.createDiv({ cls: classes.join(" ") });
+      if (dStr === todayStr) el.setAttribute("aria-current", "date");
+      el.createDiv({ cls: "dwh-diary__cnum", text: String(d.day) });
+      const fest = festMap.get(dStr);
+      if (fest) {
+        if (fest.ban) {
+          el.createDiv({ cls: "dwh-diary__ban", text: "\u73ED" });
+        } else if (fest.label) {
+          el.createDiv({ cls: "dwh-diary__fest", text: fest.label });
+        }
+      }
+      if (cell.inCurrentMonth && api.repo.hasEntry(d)) {
+        const dot = el.createDiv({ cls: "dwh-diary__dot" });
+        dot.setAttribute("title", "\u5DF2\u5199\u65E5\u8BB0");
+      }
+      if (cell.inCurrentMonth && (dStr === todayStr || api.repo.hasEntry(d))) {
+        el.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") {event.preventDefault(); void openOrCreate(api,d);} });
+        el.setAttribute("role", "button");
+        el.setAttribute("tabindex", "0");
+        el.addEventListener("click", () => void openOrCreate(api, d));
       }
     }
-    if (cell.inCurrentMonth && api.repo.hasEntry(d)) {
-      const dot = el.createDiv({ cls: "dwh-diary__dot" });
-      dot.setAttribute("title", "\u5DF2\u5199\u65E5\u8BB0");
-    }
-    if (cell.inCurrentMonth) {
-      el.setAttribute("role", "button");
-      el.setAttribute("tabindex", "0");
-      el.addEventListener("click", () => void openOrCreate(api, d));
+    if (ticket !== generation) return;
+    title.textContent = diarySidebar ? month.year + "年" + month.month + "月" : month.month + "月 " + month.year;
+    const oldGrid = calWrap.querySelector(".dwh-diary__grid");
+    if (oldGrid) oldGrid.replaceWith(grid);
+    else calWrap.append(grid);
+  }
+  if (diarySidebar) {
+    title.setAttribute("aria-live", "polite");
+    for (const [direction, label] of [[-1, "上个月"], [1, "下个月"]]) {
+      const control = header.createEl("button", { cls: "journal-month-arrow", attr: { type: "button", title: label, "aria-label": label } });
+      control.dataset.direction = String(direction);
+      control.addEventListener("click", () => void showMonth(direction));
     }
   }
+  await showMonth();
   const foot = container.createDiv({ cls: "dwh-diary__foot" });
   const weeklyBtn = foot.createEl("button", {
     cls: "dwh-btn dwh-diary__weekly",
@@ -1453,6 +1482,8 @@ var MarkdownFileSuggestModal = class extends import_obsidian4.FuzzySuggestModal 
   constructor(app, onChoose) {
     super(app);
     this.onChoose = onChoose;
+    this.modalEl.addClass("dwh-sticky-picker");
+    this.inputEl.addClass("dwh-note-picker");
     this.setPlaceholder("\u641C\u7D22 Markdown \u6587\u4EF6\u2026");
   }
   getItems() {
@@ -1540,24 +1571,15 @@ var WorkstationHomeView = class extends import_obsidian4.ItemView {
     const content = this.containerEl.children[1];
     content.empty();
     content.addClass("dwh-home");
-    const greeting = "工作台";
-    const hero = content.createDiv({ cls: "dwh-home__hero" });
-    const heroCopy = hero.createDiv({ cls: "dwh-home__hero-copy" });
-    heroCopy.createDiv({ cls: "dwh-home__eyebrow", text: "\u4E2A\u4EBA\u5DE5\u4F5C\u7AD9" });
-    heroCopy.createEl("h1", { cls: "dwh-home__title", text: greeting });
-    const dateLine = heroCopy.createDiv({ cls: "dwh-home__date" });
-    dateLine.createSpan({ cls: "dwh-home__date-text", text: formatDisplayDate(todayLocalDate()) });
     this.renderedDayKey = dayKeyOf(todayLocalDate());
     const grid = content.createDiv({ cls: "dwh-home__grid" });
     const leftColumn = grid.createDiv({ cls: "dwh-home__left" });
     const inspirationPanel = leftColumn.createDiv({ cls: "dwh-panel dwh-inspiration" });
     const todoPanel = leftColumn.createDiv({ cls: "dwh-panel dwh-todos" });
     const documentLinesPanel = grid.createDiv({ cls: "dwh-panel dwh-document-lines" });
-    const diaryPanel = grid.createDiv({ cls: "dwh-panel dwh-diary" });
     this.renderInspirations(inspirationPanel);
     this.renderTodos(todoPanel);
     this.renderDocumentLines(documentLinesPanel);
-    void renderHomeDiaryCard(diaryPanel, this.api, () => this.onOpenCalendar?.());
   }
   data() {
     return this.api.getData();
@@ -2466,6 +2488,7 @@ async function renderDayDetail(root, p) {
   dWrap.createEl("div", { cls: "dwh-detail__label", text: "\u65E5\u8BB0" });
   if (entries.length === 0) {
     dWrap.createDiv({ cls: "dwh-detail__empty", text: "\u8FD8\u6CA1\u6709\u5199\u8FD9\u4E00\u5929" });
+    if (compareLocalDate(date,todayLocalDate()) !== 0) return;
     const btn = dWrap.createEl("button", { cls: "dwh-btn dwh-btn--primary dwh-btn--block", text: "\u5199\u8FD9\u4E00\u5929" });
     btn.addEventListener("click", () => p.onCreate());
   } else {
@@ -3119,6 +3142,7 @@ var WorkstationHomePlugin = class extends import_obsidian7.Plugin {
       await leaf.setViewState({ type: VIEW_TYPE_WORKSTATION_HOME, active: true });
     }
     await this.app.workspace.revealLeaf(leaf);
+    this.app.workspace.setActiveLeaf(leaf, {focus:true});
   }
   async activateCalendar() {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DIARY_CALENDAR)[0];

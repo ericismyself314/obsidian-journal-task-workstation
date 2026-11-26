@@ -470,6 +470,7 @@ var DiaryRepository = class {
     if (existing instanceof import_obsidian.TFile) {
       return existing;
     }
+    if (compareLocalDate(date, todayLocalDate()) !== 0) return null;
     const content = buildDefaultDiaryContent(date, writeWeatherNote);
     const created = await this.app.vault.create(path, content);
     this.dirty = true;
@@ -477,6 +478,7 @@ var DiaryRepository = class {
   }
   async createAndOpen(date, target, writeWeatherNote) {
     const file = await this.createOrOpen(date, writeWeatherNote);
+    if (!file) return;
     await this.openDiary(
       { date: formatLocalDate(date), path: file.path, modifiedAt: file.stat.mtime },
       target
@@ -1333,49 +1335,76 @@ async function renderHomeDiaryCard(container, api, onOpenCalendar) {
   const previewEl = container.createDiv({ cls: "dwh-diary__preview" });
   void renderTodayPreview(previewEl, api, today);
   const calWrap = container.createDiv({ cls: "dwh-diary__mini-cal" });
-  calWrap.createDiv({ cls: "dwh-diary__cal-title", text: `${today.month}\u6708 ${today.year}` });
-  const grid = calWrap.createDiv({ cls: "dwh-diary__grid" });
-  for (const w of weekdayHeader(weekStart)) {
-    grid.createDiv({ cls: "dwh-diary__dw", text: w });
-  }
-  let festMap = /* @__PURE__ */ new Map();
-  try {
-    const holidays = await api.holidays.getHolidaysForMonth(
-      settings.holidayRegion,
-      today.year,
-      today.month
-    );
-    festMap = buildFestMap(holidays, today.year, today.month);
-  } catch {
-  }
-  const cells = buildMonthGrid(today.year, today.month, weekStart);
-  for (const cell of cells) {
-    const d = cell.date;
-    const dStr = formatLocalDate(d);
-    const classes = ["dwh-diary__cell"];
-    if (!cell.inCurrentMonth) classes.push("dwh-diary__cell--mute");
-    else if (isWeekend(d, weekStart)) classes.push("dwh-diary__cell--we");
-    if (dStr === todayStr) classes.push("dwh-diary__cell--today");
-    const el = grid.createDiv({ cls: classes.join(" ") });
-    el.createDiv({ cls: "dwh-diary__cnum", text: String(d.day) });
-    const fest = festMap.get(dStr);
-    if (fest) {
-      if (fest.ban) {
-        el.createDiv({ cls: "dwh-diary__ban", text: "\u73ED" });
-      } else if (fest.label) {
-        el.createDiv({ cls: "dwh-diary__fest", text: fest.label });
+  const diarySidebar = container.classList.contains("paper-journal-calendar");
+  const header = calWrap.createDiv({ cls: "journal-month-heading" });
+  const title = header.createDiv({ cls: "dwh-diary__cal-title" });
+  let shown = today;
+  let generation = 0;
+  async function showMonth(direction = 0) {
+    const ticket = ++generation;
+    shown = addMonths(shown, direction);
+    const month = shown;
+    const grid = calWrap.ownerDocument.createElement("div");
+    grid.className = "dwh-diary__grid";
+    if (direction) grid.classList.add(direction > 0 ? "journal-turn-next" : "journal-turn-prev");
+    for (const w of weekdayHeader(weekStart)) {
+      grid.createDiv({ cls: "dwh-diary__dw", text: w });
+    }
+    let festMap = /* @__PURE__ */ new Map();
+    try {
+      const holidays = await api.holidays.getHolidaysForMonth(
+        settings.holidayRegion,
+        month.year,
+        month.month
+      );
+      festMap = buildFestMap(holidays, month.year, month.month);
+    } catch {
+    }
+    const cells = buildMonthGrid(month.year, month.month, weekStart);
+    for (const cell of cells) {
+      const d = cell.date;
+      const dStr = formatLocalDate(d);
+      const classes = ["dwh-diary__cell"];
+      if (!cell.inCurrentMonth) classes.push("dwh-diary__cell--mute");
+      else if (isWeekend(d, weekStart)) classes.push("dwh-diary__cell--we");
+      if (dStr === todayStr) classes.push("dwh-diary__cell--today");
+      const el = grid.createDiv({ cls: classes.join(" ") });
+      if (dStr === todayStr) el.setAttribute("aria-current", "date");
+      el.createDiv({ cls: "dwh-diary__cnum", text: String(d.day) });
+      const fest = festMap.get(dStr);
+      if (fest) {
+        if (fest.ban) {
+          el.createDiv({ cls: "dwh-diary__ban", text: "\u73ED" });
+        } else if (fest.label) {
+          el.createDiv({ cls: "dwh-diary__fest", text: fest.label });
+        }
+      }
+      if (cell.inCurrentMonth && api.repo.hasEntry(d)) {
+        const dot = el.createDiv({ cls: "dwh-diary__dot" });
+        dot.setAttribute("title", "\u5DF2\u5199\u65E5\u8BB0");
+      }
+      if (cell.inCurrentMonth && (dStr === todayStr || api.repo.hasEntry(d))) {
+        el.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") {event.preventDefault(); void openOrCreate(api,d);} });
+        el.setAttribute("role", "button");
+        el.setAttribute("tabindex", "0");
+        el.addEventListener("click", () => void openOrCreate(api, d));
       }
     }
-    if (cell.inCurrentMonth && api.repo.hasEntry(d)) {
-      const dot = el.createDiv({ cls: "dwh-diary__dot" });
-      dot.setAttribute("title", "\u5DF2\u5199\u65E5\u8BB0");
-    }
-    if (cell.inCurrentMonth) {
-      el.setAttribute("role", "button");
-      el.setAttribute("tabindex", "0");
-      el.addEventListener("click", () => void openOrCreate(api, d));
+    if (ticket !== generation) return;
+    title.textContent = diarySidebar ? month.year + "年" + month.month + "月" : month.month + "月 " + month.year;
+    const oldGrid = calWrap.querySelector(".dwh-diary__grid");
+    if (oldGrid) oldGrid.replaceWith(grid);
+    else calWrap.append(grid);
+  }
+  if (diarySidebar) {
+    title.setAttribute("aria-live", "polite");
+    for (const [direction, label] of [[-1, "上个月"], [1, "下个月"]]) {
+      const control = header.createEl("button", { cls: "journal-month-arrow", attr: { type: "button", title: label, "aria-label": label } });
+      control.dataset.direction = String(direction);
+      control.addEventListener("click", () => void showMonth(direction));
     }
   }
+  await showMonth();
   const foot = container.createDiv({ cls: "dwh-diary__foot" });
   const weeklyBtn = foot.createEl("button", {
     cls: "dwh-btn dwh-diary__weekly",
@@ -1453,6 +1482,8 @@ var MarkdownFileSuggestModal = class extends import_obsidian4.FuzzySuggestModal 
   constructor(app, onChoose) {
     super(app);
     this.onChoose = onChoose;
+    this.modalEl.addClass("dwh-sticky-picker");
+    this.inputEl.addClass("dwh-note-picker");
     this.setPlaceholder("\u641C\u7D22 Markdown \u6587\u4EF6\u2026");
   }
   getItems() {
@@ -1540,24 +1571,15 @@ var WorkstationHomeView = class extends import_obsidian4.ItemView {
     const content = this.containerEl.children[1];
     content.empty();
     content.addClass("dwh-home");
-    const greeting = "工作台";
-    const hero = content.createDiv({ cls: "dwh-home__hero" });
-    const heroCopy = hero.createDiv({ cls: "dwh-home__hero-copy" });
-    heroCopy.createDiv({ cls: "dwh-home__eyebrow", text: "\u4E2A\u4EBA\u5DE5\u4F5C\u7AD9" });
-    heroCopy.createEl("h1", { cls: "dwh-home__title", text: greeting });
-    const dateLine = heroCopy.createDiv({ cls: "dwh-home__date" });
-    dateLine.createSpan({ cls: "dwh-home__date-text", text: formatDisplayDate(todayLocalDate()) });
     this.renderedDayKey = dayKeyOf(todayLocalDate());
     const grid = content.createDiv({ cls: "dwh-home__grid" });
     const leftColumn = grid.createDiv({ cls: "dwh-home__left" });
     const inspirationPanel = leftColumn.createDiv({ cls: "dwh-panel dwh-inspiration" });
     const todoPanel = leftColumn.createDiv({ cls: "dwh-panel dwh-todos" });
     const documentLinesPanel = grid.createDiv({ cls: "dwh-panel dwh-document-lines" });
-    const diaryPanel = grid.createDiv({ cls: "dwh-panel dwh-diary" });
     this.renderInspirations(inspirationPanel);
     this.renderTodos(todoPanel);
     this.renderDocumentLines(documentLinesPanel);
-    void renderHomeDiaryCard(diaryPanel, this.api, () => this.onOpenCalendar?.());
   }
   data() {
     return this.api.getData();
@@ -2466,6 +2488,7 @@ async function renderDayDetail(root, p) {
   dWrap.createEl("div", { cls: "dwh-detail__label", text: "\u65E5\u8BB0" });
   if (entries.length === 0) {
     dWrap.createDiv({ cls: "dwh-detail__empty", text: "\u8FD8\u6CA1\u6709\u5199\u8FD9\u4E00\u5929" });
+    if (compareLocalDate(date,todayLocalDate()) !== 0) return;
     const btn = dWrap.createEl("button", { cls: "dwh-btn dwh-btn--primary dwh-btn--block", text: "\u5199\u8FD9\u4E00\u5929" });
     btn.addEventListener("click", () => p.onCreate());
   } else {
@@ -3119,6 +3142,7 @@ var WorkstationHomePlugin = class extends import_obsidian7.Plugin {
       await leaf.setViewState({ type: VIEW_TYPE_WORKSTATION_HOME, active: true });
     }
     await this.app.workspace.revealLeaf(leaf);
+    this.app.workspace.setActiveLeaf(leaf, {focus:true});
   }
   async activateCalendar() {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DIARY_CALENDAR)[0];
@@ -3222,6 +3246,30 @@ function journalButton(parent, text, callback, cls = '') {
   el.addEventListener('click', () => Promise.resolve(callback()).catch(e => { console.error(e); new journalOb.Notice(e.message || '操作失败'); }));
   return el;
 }
+class JournalSearchModal extends journalOb.SuggestModal {
+  constructor(view) {
+    super(view.app);
+    this.view = view;
+    this.setPlaceholder('按日期或标题查找日记');
+    this.emptyStateText = '没有找到日记';
+    this.modalEl.classList.add('journal-search-paper');
+    this.rows = view.plugin.repo.listAll().sort((a,b) => b.date.localeCompare(a.date)).map(ref => {
+      const file = view.app.vault.getAbstractFileByPath(ref.path);
+      const meta = file && view.app.metadataCache.getFileCache(file)?.frontmatter;
+      const title = ref.path === view.path ? view.model.title : String(meta?.['标题'] || '');
+      return {ref, title};
+    });
+  }
+  getSuggestions(input) {
+    const query = input.trim().toLowerCase();
+    return this.rows.filter(({ref,title}) => (ref.date + ' ' + title).toLowerCase().includes(query));
+  }
+  renderSuggestion({ref,title}, el) {
+    el.createEl('strong', {text:ref.date});
+    if (title) el.createSpan({text:'　' + title});
+  }
+  async onChooseSuggestion({ref}) { await this.view.openPath(ref.path); }
+}
 class PaperJournalView extends journalOb.ItemView {
   constructor(leaf, plugin) {
     super(leaf); this.plugin = plugin; this.path = ''; this.source = ''; this.dirty = false; this.revision = 0; this.savePromise = null; this.timer = null; this.navigating = false; this.loadToken = 0;
@@ -3236,15 +3284,20 @@ class PaperJournalView extends journalOb.ItemView {
   }
   async onOpen() {
     const root = this.contentEl || this.containerEl.children[1];
-    let width = 0;
-    const observer = new ResizeObserver(() => {
-      if (root.clientWidth === width) return;
-      width = root.clientWidth;
-      for (const [i, area] of (this.areas || []).entries()) {
-        area.style.height = 'auto'; area.style.height = Math.max(i === 0 ? 160 : 112, area.scrollHeight + 2) + 'px';
+    this.paperSizes = new Map();
+    this.paperObserver = new ResizeObserver(entries => {
+      for (const {target, contentRect} of entries) {
+        const entry = this.paperSizes.get(target);
+        if (entry && entry.width !== contentRect.width) {
+          entry.width = contentRect.width;
+          entry.fit();
+        }
       }
     });
-    observer.observe(root); this.register(() => observer.disconnect());
+    this.register(() => this.paperObserver.disconnect());
+    this.registerDomEvent(root.ownerDocument.fonts, 'loadingdone', () => {
+      for (const entry of this.paperSizes.values()) entry.fit();
+    });
     this.registerEvent(this.app.vault.on('modify', file => {
       if (file.path === this.path && !this.savePromise) {
         if (!this.dirty) void this.loadPath(this.path);
@@ -3285,41 +3338,70 @@ class PaperJournalView extends journalOb.ItemView {
   }
   render() {
     const root = this.contentEl || this.containerEl.children[1]; root.empty(); root.addClass('dwh-journal');
-    const top = root.createDiv({ cls: 'dwh-journal__toolbar' });
-    journalButton(top, '‹ 工作台', async () => { if (await this.flush()) await this.plugin.activateHome(); });
-    journalEl(top, 'span', 'dwh-journal__name', '我的日记');
-    const actions = top.createDiv({ cls: 'dwh-journal__actions' }); this.plugin.renderAppearance(actions);
+    this.paperObserver?.disconnect();
+    this.paperSizes?.clear();
     const layout = root.createDiv({ cls: 'dwh-journal__layout' });
     const aside = layout.createEl('aside', { cls: 'dwh-journal__aside' });
-    const asideHead = aside.createDiv({ cls: 'dwh-journal__aside-head' }); journalEl(asideHead, 'h2', '', '最近的日记');
-    journalButton(asideHead, '写今天', async () => { if (!await this.flush()) return; const f = await this.plugin.repo.createOrOpen(todayLocalDate()); await this.openPath(f.path); });
-    const search = aside.createEl('input', { cls: 'dwh-journal__search', attr: { placeholder: '按日期或标题查找', 'aria-label': '查找日记' } });
-    search.addEventListener('input', () => { this.search = search.value; void this.renderStack(); }); this.search = '';
+    const calendar=aside.createDiv({cls:'paper-journal-calendar'});
+    void renderHomeDiaryCard(calendar,this.plugin,async()=>{if(await this.flush())await this.plugin.activateCalendar();}).catch(e=>new journalOb.Notice(e.message));
     this.stack = aside.createDiv({ cls: 'dwh-journal__stack' });
-    journalButton(aside, '查看日历', async () => { if (await this.flush()) await this.plugin.activateCalendar(); });
     const paper = layout.createDiv({ cls: 'dwh-journal__paper' });
     const date = this.path.split('/').pop().replace(/\.md$/, '');
     const parsed = parseDateFromName(date, this.plugin.getSettings().diaryDateFormat);
     journalEl(paper, 'div', 'dwh-journal__date', parsed ? `${parsed.year}年${parsed.month}月${parsed.day}日  ${WEEKDAYS_ZH[weekdayOf(parsed)].replace('周', '星期')}` : date);
-    const titleLabel = paper.createEl('label', { cls: 'dwh-journal__title-label', text: '标题' });
+    const pageActions = paper.createDiv({cls:'journal-page-actions'});
+    const home = journalButton(pageActions, '', async () => {
+      if (await this.flush()) await this.plugin.activateHome();
+    }, 'journal-home-icon');
+    home.title = '回到工作台';
+    home.setAttribute('aria-label', home.title);
+    journalOb.setIcon(home, 'home');
+    const search = journalButton(pageActions, '', () => new JournalSearchModal(this).open(), 'journal-search-icon');
+    search.title = '搜索日记';
+    search.setAttribute('aria-label', '搜索日记');
+    journalOb.setIcon(search, 'search');
+    const titleLabel = paper.createEl('label', { cls: 'dwh-journal__title-label' });
     const title = titleLabel.createEl('input', { cls: 'dwh-journal__title', attr: { placeholder: '给今天起个标题', 'aria-label': '标题' } }); title.value = this.model.title;
     title.addEventListener('input', () => this.edit(() => { this.model.title = title.value; }));
     const meta = paper.createDiv({ cls: 'dwh-journal__meta' });
-    for (const [key, name, hint] of [['mood', '心情', '自己写下此刻的心情'], ['weather', '天气', '自己写，例如晴，有微风']]) {
+    for (const [key, name, hint] of [['mood', '心情', '写下心情'], ['weather', '天气', '写下天气']]) {
       const label = meta.createEl('label');
       label.createSpan({ cls: 'dwh-journal__meta-name', text: name + '：' });
       const input = label.createEl('input', { attr: { placeholder: hint, 'aria-label': name } }); input.value = this.model[key];
       input.addEventListener('input', () => this.edit(() => { this.model[key] = input.value; }));
     }
-    this.areas = [];
     JOURNAL_HEADINGS.forEach((heading, i) => {
       const block = paper.createEl('section', { cls: 'dwh-journal__section' });
-      const label = block.createEl('label', { text: heading });
-      const area = label.createEl('textarea', { cls: 'dwh-journal__writing', attr: { 'aria-label': heading, placeholder: '在这里写下……', spellcheck: 'false' } });
-      area.value = this.model.parts[i]; this.areas.push(area);
-      const size = () => { area.style.height = 'auto'; area.style.height = Math.max(i === 0 ? 160 : 112, area.scrollHeight + 2) + 'px'; };
-      area.addEventListener('input', () => { size(); this.edit(() => { this.model.parts[i] = area.value; }); });
-      requestAnimationFrame(size);
+      const head = block.createDiv({cls:'journal-segment-heading'});
+      head.createEl('span', {cls:'journal-segment-tab', text:heading});
+      const edit = journalButton(head, '编辑本段', () => this.openBlocks(i), 'ink-section-edit');
+      edit.setAttribute('aria-label', '编辑' + heading);
+      edit.title = '编辑本段';
+      const field = block.createDiv({cls:'journal-writing-field'});
+      const area = field.createEl('textarea', {cls:'dwh-journal__writing', attr:{
+        rows:'1', 'aria-label':heading, placeholder:'在这里写下……', spellcheck:'false'
+      }});
+      area.value = this.model.parts[i];
+      // The hidden copy wraps exactly like the editor, without collapsing the active input to measure it.
+      const measure = area.cloneNode(false);
+      measure.classList.add('journal-writing-measure');
+      measure.removeAttribute('aria-label');
+      measure.setAttribute('aria-hidden','true');
+      measure.inert = true;
+      field.appendChild(measure);
+      const fit = () => {
+        if (!field.clientWidth) return;
+        measure.value = area.value;
+        const height = measure.scrollHeight;
+        if (height > 0 && area.style.height !== height + 'px') area.style.setProperty('height', height + 'px', 'important');
+      };
+      fit();
+      this.paperSizes?.set(field, {width:field.clientWidth,fit});
+      this.paperObserver?.observe(field);
+      area.addEventListener('input', () => {
+        fit();
+        this.edit(() => { this.model.parts[i] = area.value; });
+      });
     });
     const foot = paper.createDiv({ cls: 'dwh-journal__footer' });
     this.prev = journalButton(foot, '‹ 上一篇', () => this.adjacent(1));
@@ -3327,8 +3409,22 @@ class PaperJournalView extends journalOb.ItemView {
     this.next = journalButton(foot, '下一篇 ›', () => this.adjacent(-1));
     const tools = root.createDiv({ cls: 'dwh-journal__tools' });
     journalButton(tools, '保存', () => this.flush());
-    journalButton(tools, '在原文中打开', async () => { if (!await this.flush()) return; const file = this.app.vault.getAbstractFileByPath(this.path); const leaf = this.app.workspace.getLeaf('tab'); await leaf.openFile(file, { active: true }); });
     journalButton(tools, '另存草稿', () => this.saveDraftAsFile());
+  }
+  async openBlocks(section=0) {
+    if (!await this.flush()) return;
+    const file=this.app.vault.getAbstractFileByPath(this.path);
+    if (!(file instanceof journalOb.TFile)) return;
+    const ws=this.app.workspace;
+    const leaf=ws.getLeavesOfType('markdown').find(l=>l.view.file?.path===file.path)||ws.getLeaf('tab');
+    await leaf.openFile(file,{active:true,state:{mode:'source',source:false}});
+    await ws.revealLeaf(leaf);
+    const editor=leaf.view.editor;
+    if (!editor) return;
+    const lines=editor.getValue().split(/\r?\n/);
+    const at=lines.findIndex(line=>/^##\s+/.test(line)&&journalSection(line)===section);
+    if(at>=0){const pos={line:Math.min(at+1,lines.length-1),ch:0};editor.setCursor(pos);editor.scrollIntoView({from:pos,to:pos},true);}
+    editor.focus();
   }
   async renderStack() {
     if (!this.stack || !this.path) return;
@@ -3342,9 +3438,8 @@ class PaperJournalView extends journalOb.ItemView {
     }));
     if (token !== this.stackToken) return;
     this.stack.empty();
-    const term = (this.search || '').trim().toLowerCase();
-    const shown = models.filter(Boolean).filter(x => !term || (x.ref.date + x.model.title).toLowerCase().includes(term));
-    const count = term ? shown.length : Math.max(7, this.plugin.getSettings().recentDiaryCount || 7);
+    const shown = models.filter(Boolean);
+    const count = Math.max(7, this.plugin.getSettings().recentDiaryCount || 7);
     for (const { ref, model, excerpt } of shown.slice(0, count)) {
       const card = journalButton(this.stack, '', () => this.openPath(ref.path), 'dwh-journal__sheet' + (ref.path === this.path ? ' is-selected' : ''));
       card.setAttribute('aria-current', ref.path === this.path ? 'page' : 'false');
@@ -3403,101 +3498,27 @@ class PaperJournalView extends journalOb.ItemView {
 async function installPaperJournal(plugin) {
   const base = plugin.manifest.dir || plugin.app.vault.configDir + '/plugins/' + plugin.manifest.id;
   const readJson = async (name, fallback) => { try { return JSON.parse(await plugin.app.vault.adapter.read(base + '/' + name)); } catch { return fallback; } };
-  plugin.journalPreferences = await readJson('appearance-preferences.json', { mode: 'light', palette: 'beige' });
   plugin.journalDrafts = await readJson('journal-drafts.json', {});
   plugin.saveJournalDrafts = () => plugin.app.vault.adapter.write(base + '/journal-drafts.json', JSON.stringify(plugin.journalDrafts, null, 2));
-  const media = window.matchMedia('(prefers-color-scheme: dark)');
-  plugin.journalPreferences = { mode: plugin.journalPreferences.mode === 'dark' || plugin.journalPreferences.mode === 'system' && media.matches ? 'dark' : 'light' };
-  plugin.applyAppearance = () => {
-    const prefs = plugin.journalPreferences;
-    const mode = prefs.mode;
-    document.body.dataset.dwhMode = mode === 'dark' ? 'dark' : 'light';
-    delete document.body.dataset.dwhPalette;
-  };
-  plugin.setAppearance = async (key, value) => {
-    if (key !== 'mode' || !['light','dark'].includes(value)) return;
-    plugin.journalPreferences = { mode: value }; plugin.applyAppearance();
-    const content = JSON.stringify(plugin.journalPreferences, null, 2);
-    plugin.appearanceSave = (plugin.appearanceSave || Promise.resolve()).catch(() => {}).then(() => plugin.app.vault.adapter.write(base + '/appearance-preferences.json', content));
-    await plugin.appearanceSave;
-  };
-  plugin.renderAppearance = parent => {
-    const control = parent.createDiv({ cls: 'dwh-appearance dwh-appearance--slider' });
-    const groups = [['mode', '外观', [['light','白色'],['dark','黑色']]]];
-    for (const [key, name, choices] of groups) {
-      const label = control.createDiv({ cls: 'dwh-appearance__slider-row' });
-      label.createSpan({ cls: 'dwh-appearance__label', text: name });
-      const range = label.createDiv({ cls: 'dwh-appearance__segment', attr: { role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuemax': '1', 'aria-label': key === 'mode' ? '外观模式' : '纸面配色', title: '拖动滑块或点击选项，也可用方向键调整' } });
-      range.setAttribute('role', 'slider'); range.setAttribute('tabindex', '0');
-      range.setAttribute('aria-valuemin', '0'); range.setAttribute('aria-valuemax', '1');
-      range.setAttribute('aria-label', key === 'mode' ? '外观模式' : '纸面配色');
-      range.dataset.pref = key;
-      const thumb = range.createDiv({ cls: 'dwh-appearance__thumb' });
-      const options = choices.map(choice => range.createSpan({ cls: 'dwh-appearance__option', text: choice[1] }));
-      let pointer = null, origin = 0, startIndex = 0, position = 0, dragging = false;
-      const names = () => choices.map(c => c[1]);
-      const setPosition = value => { position = Math.max(0, Math.min(choices.length - 1, value)); thumb.style.transform = `translateX(${position * 100}%)`; };
-      const update = () => {
-        const index = Math.max(0, choices.findIndex(c => c[0] === plugin.journalPreferences[key]));
-        if (!dragging) setPosition(index);
-        range.setAttribute('aria-valuenow', String(index)); range.setAttribute('aria-valuetext', names()[index]);
-        options.forEach((option, i) => { option.textContent = names()[i]; option.classList.toggle('is-selected', index === i); });
-      };
-      const preview = index => { plugin.journalPreferences[key] = choices[index][0]; plugin.applyAppearance(); };
-      const commit = index => {
-        dragging = false; range.classList.remove('is-dragging'); setPosition(index);
-        void plugin.setAppearance(key, choices[index][0]).catch(() => new journalOb.Notice('外观设置未能保存，请重试'));
-      };
-      const positionAt = x => {
-        const box = range.getBoundingClientRect(); const cell = (box.width - 6) / choices.length;
-        return Math.max(0, Math.min(choices.length - 1, (x - box.left - 3 - cell / 2) / cell));
-      };
-      range.addEventListener('pointerdown', e => {
-        if (e.button !== 0 || pointer !== null) return;
-        pointer = e.pointerId; origin = e.clientX;
-        startIndex = choices.findIndex(c => c[0] === plugin.journalPreferences[key]);
-        range.setPointerCapture(e.pointerId); range.focus();
-      });
-      range.addEventListener('pointermove', e => {
-        if (pointer !== e.pointerId || Math.abs(e.clientX - origin) < 4 && !dragging) return;
-        dragging = true; range.classList.add('is-dragging');
-        setPosition(positionAt(e.clientX)); preview(Math.round(position));
-      });
-      range.addEventListener('pointerup', e => {
-        if (pointer !== e.pointerId) return;
-        const index = Math.round(dragging ? position : positionAt(e.clientX));
-        pointer = null; range.releasePointerCapture(e.pointerId); commit(index);
-      });
-      const cancel = e => {
-        if (pointer !== e.pointerId) return;
-        pointer = null; dragging = false; range.classList.remove('is-dragging'); preview(Math.max(0,startIndex));
-      };
-      range.addEventListener('pointercancel', cancel); range.addEventListener('lostpointercapture', cancel);
-      range.addEventListener('keydown', e => {
-        if (pointer !== null) return;
-        let index = Number(range.getAttribute('aria-valuenow'));
-        if (['ArrowRight','ArrowUp'].includes(e.key)) index = Math.min(choices.length - 1,index+1);
-        else if (['ArrowLeft','ArrowDown'].includes(e.key)) index = Math.max(0,index-1);
-        else if (e.key === 'Home') index = 0;
-        else if (e.key === 'End') index = choices.length - 1;
-        else return;
-        e.preventDefault(); commit(index);
-      });
-      control.addEventListener('dwh-appearance-change', update); update();
+  document.body.dataset.dwhMode = 'dark';
+  delete document.body.dataset.dwhPalette;
+  const markDiaryEditors=()=>{
+    const folder=plugin.repo.folderPath()+'/';
+    for(const leaf of plugin.app.workspace.getLeavesOfType('markdown')){
+      const v=leaf.view, file=v.file;
+      const isDiary=!!file && file.path.startsWith(folder) && !!parseDateFromName(file.basename,plugin.getSettings().diaryDateFormat);
+      v.containerEl?.classList.toggle('ink-diary-editor',isDiary);
     }
   };
-  const apply = plugin.applyAppearance;
-  plugin.applyAppearance = () => {
-    apply();
-    document.querySelectorAll('.dwh-appearance--slider').forEach(el => el.dispatchEvent(new Event('dwh-appearance-change')));
-  };
-  plugin.applyAppearance();
+  for(const event of ['file-open','layout-change','active-leaf-change'])plugin.registerEvent(plugin.app.workspace.on(event,markDiaryEditors));
+  plugin.app.workspace.onLayoutReady(markDiaryEditors);
+  plugin.register(()=>document.querySelectorAll('.ink-diary-editor').forEach(el=>el.classList.remove('ink-diary-editor')));
   plugin.register(() => { delete document.body.dataset.dwhMode; delete document.body.dataset.dwhPalette; });
   plugin.registerView(JOURNAL_VIEW, leaf => new PaperJournalView(leaf, plugin));
   plugin.activateJournal = async path => {
     let leaf = plugin.app.workspace.getLeavesOfType(JOURNAL_VIEW)[0];
     if (!leaf) { leaf = plugin.app.workspace.getLeaf('tab'); await leaf.setViewState({ type: JOURNAL_VIEW, active: true }); }
-    await leaf.view.openPath(path); await plugin.app.workspace.revealLeaf(leaf);
+    await plugin.app.workspace.revealLeaf(leaf); plugin.app.workspace.setActiveLeaf(leaf, {focus:true}); await leaf.loadIfDeferred?.(); if(path) await leaf.view.openPath(path);
   };
   plugin.repo.openDiary = async ref => plugin.activateJournal(ref.path);
   plugin.addCommand({ id: 'open-paper-journal', name: '打开纸张日记', callback: async () => { const f = await plugin.repo.createOrOpen(todayLocalDate()); await plugin.activateJournal(f.path); } });
@@ -3507,26 +3528,11 @@ async function installPaperJournal(plugin) {
 }
 const originalJournalOnload = WorkstationHomePlugin.prototype.onload;
 WorkstationHomePlugin.prototype.onload = async function () { await originalJournalOnload.call(this); await installPaperJournal(this); };
-const originalJournalHomeRender = WorkstationHomeView.prototype.render;
-WorkstationHomeView.prototype.render = function () {
-  originalJournalHomeRender.call(this);
-  if (this.api.renderAppearance) {
-    const content = this.contentEl || this.containerEl.children[1];
-    const hero = content.querySelector('.dwh-home__hero');
-    const title = content.querySelector('.dwh-home__title');
-    if (title) title.textContent = '纸间';
-    if (hero) this.api.renderAppearance(hero);
-    const workTitle = content.querySelector('.dwh-document-lines .dwh-panel__title');
-    if (workTitle) workTitle.textContent = '工作进展';
-    const inspirationTitle = content.querySelector('.dwh-inspiration .dwh-panel__title');
-    if (inspirationTitle) inspirationTitle.textContent = '灵感';
-  }
-};
 const originalPaperHomeDiary = renderHomeDiaryCard;
 renderHomeDiaryCard = async function (container, api, onOpenCalendar) {
   await originalPaperHomeDiary(container, api, onOpenCalendar);
   const title = container.querySelector('.dwh-panel__title');
-  if (title) title.textContent = '日历与日记';
+  if (title) title.textContent = '日记';
   const today = container.querySelector('.dwh-diary__today');
   const preview = container.querySelector('.dwh-diary__preview');
   const calendar = container.querySelector('.dwh-diary__mini-cal');
@@ -3536,11 +3542,20 @@ renderHomeDiaryCard = async function (container, api, onOpenCalendar) {
   body.appendChild(calendar);
   const sheet = body.createDiv({ cls: 'dwh-home-journal-preview' });
   sheet.appendChild(today); sheet.appendChild(preview);
-  if (foot) container.appendChild(foot);
+  if (container.classList.contains('paper-journal-calendar')) {
+    foot?.remove();
+    return;
+  }
+  if (foot) {
+    const write=today.querySelector('.dwh-diary__write');
+    if (write) foot.prepend(write);
+    container.appendChild(foot);
+  }
 };
 buildDefaultDiaryContent = date => journalNewContent(date);
 
-WorkstationHomeView.prototype.getDisplayText = function () { return "纸间"; };
+WorkstationHomeView.prototype.getDisplayText = function () { return "工作台"; };
+
 
 
 /* 首页自适应翻纸；沿用现有条目的编辑、排序与保存。 */
@@ -3566,6 +3581,7 @@ function openHomePaper(view, title, text, save) {
 }
 WorkstationHomeView.prototype.setupPaperPaging = function () {
   const root = this.contentEl || this.containerEl.children[1];
+  if(root.classList.contains('ink-home')) return;
   this.paperState ||= {};
   const height = root.clientHeight || window.innerHeight;
   const compact = root.clientWidth >= 900 && height >= 680;
@@ -3578,7 +3594,7 @@ WorkstationHomeView.prototype.setupPaperPaging = function () {
     ['todos','.dwh-todos','.dwh-todo__list','.dwh-todo'],
     ['work','.dwh-document-lines',null,'.dwh-document-line']
   ]) {
-    const panel = root.querySelector(panelSelector); if (!panel) continue;
+    const panel = root.querySelector(panelSelector); if (!panel || panel.querySelector('.dwh-chain-list')) continue;
     let list = listSelector ? panel.querySelector(listSelector) : panel.querySelector('.dwh-paper-work-list');
     if (!list && key === 'work') {
       list = panel.createDiv({cls:'dwh-paper-work-list'});
@@ -3691,10 +3707,508 @@ const beforePaperRefresh=WorkstationHomePlugin.prototype.refreshHomeViews;
 WorkstationHomePlugin.prototype.refreshHomeViews=function(){
   const views=this.app.workspace.getLeavesOfType(VIEW_TYPE_WORKSTATION_HOME);
   for(const leaf of views){
+    if(leaf.isDeferred || typeof leaf.view.render!=='function') continue;
     const view=leaf.view,root=view.contentEl||view.containerEl.children[1];
     const active=document.activeElement;
+    if(view.paperDrag && !view.inkingFile) continue;
+    if(view.reloadLedger){view.chainLoad=view.reloadLedger().catch(error=>new journalOb.Notice(error.message));continue;}
     if(root.contains(active)&&active?.matches('input,textarea')){
       if(!view.paperPendingRefresh){view.paperPendingRefresh=true;active.addEventListener('blur',()=>setTimeout(()=>{view.paperPendingRefresh=false;view.render();},0),{once:true});}
     } else view.render();
   }
 };
+
+
+/* One chain is one ordinary Markdown note. Its progress follows the list order. */
+const chainFolders = { '灵感': '工作链/灵感', '待办': '工作链/待办', '原有工作链': '工作链/原有工作链', '独立工作链': '工作链/独立工作链' };
+
+function chainName(text) {
+  let name = text.split(/\r?\n/)[0].replace(/[<>:"/\\|?*#^[\]\x00-\x1f]/g, ' ').replace(/\s+/g,' ').trim().slice(0,72).replace(/[ .]+$/g,'');
+  if (!name) name = '未命名工作链';
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name)) name = '_' + name;
+  return name;
+}
+function chainBullet(text) {
+  return '- ' + text.trim().replace(/\r?\n/g, '\n  ');
+}
+function chainNote(text, steps = [], links = [], archived = false) {
+  const sections = ['---', '收起: ' + archived, '---', ''];
+  if (chainName(text) !== text) sections.push('## 起点', '', text, '');
+  sections.push('## 进展', '', ...steps.map(chainBullet), '');
+  if (links.length) sections.push('## 关联', '', ...links.map(chainBullet), '');
+  return sections.join('\n') + '\n';
+}
+function chainSection(source, name) {
+  const heading = new RegExp('^## ' + name + '[ \\t]*\\r?$', 'm').exec(source);
+  if (!heading) return null;
+  const start = heading.index + heading[0].length;
+  const tail = source.slice(start);
+  const next = /^#{1,2}[ \t]+/m.exec(tail);
+  return {start, end: next ? start + next.index : source.length};
+}
+function chainSteps(source) {
+  const section = chainSection(source,'进展');
+  if (!section) return [];
+  return [...source.slice(section.start,section.end).matchAll(/^[-*+] (.*)(?:\r?\n[ \t]+[^\r\n]*)*/gm)].map(m => ({
+    start: section.start + m.index, raw: m[0], text: m[0].slice(2).replace(/\r?\n {1,2}/g,'\n')
+  }));
+}
+function chainAppend(source, sectionName, text) {
+  const section = chainSection(source, sectionName);
+  const entry = chainBullet(text);
+  if (!section) return source.trimEnd() + '\n\n## ' + sectionName + '\n\n' + entry + '\n';
+  const before = source.slice(0,section.end).trimEnd();
+  return before + (before.endsWith('## ' + sectionName) ? '\n\n' : '\n') + entry + '\n\n' + source.slice(section.end);
+}
+function changeChainStep(source, snapshot, step, value) {
+  if (source !== snapshot) throw Error('笔记已有新改动，请重新打开这条进展。');
+  const end = step.start + step.raw.length;
+  if (value === null) return source.slice(0,step.start) + source.slice(end).replace(/^\r?\n/,'');
+  return source.slice(0,step.start) + chainBullet(value) + source.slice(end);
+}
+function chainKind(file) {
+  return Object.keys(chainFolders).find(kind => file.parent?.path === chainFolders[kind]);
+}
+function chainFreePath(vault, folder, name, current) {
+  const stem = chainName(name);
+  for (let i = 1; ; i++) {
+    const path = folder + '/' + stem + (i === 1 ? '' : ' (' + i + ')') + '.md';
+    const found = vault.getAbstractFileByPathInsensitive?.(path) ?? vault.getAbstractFileByPath(path);
+    if (!found || found === current) return path;
+  }
+}
+function chainAction(parent,label,fn) {
+  const b = journalButton(parent,label,async () => { if (b.disabled) return; b.disabled=true; try { await fn(); } finally { b.disabled=false; } });
+  return b;
+}
+function chainDialog(view,title,initial,save,confirmOnly=false) {
+  const modal = new journalOb.Modal(view.app);
+  modal.setTitle(title);
+  let input;
+  if (!confirmOnly) {
+    input = modal.contentEl.createEl('textarea',{cls:'dwh-chain-editor',attr:{'aria-label':title,rows:'3'}});
+    input.value = initial;
+  } else if (initial) {
+    modal.contentEl.createEl('p', {text: initial});
+  }
+  const actions = modal.contentEl.createDiv({cls:'dwh-chain-actions'});
+  chainAction(actions,'取消',()=>modal.close());
+  const commit = chainAction(actions,confirmOnly ? '确认移除' : '保存', async () => {
+    const value = input?.value.trim();
+    if (input && !value) { input.focus(); return; }
+    await save(value); modal.close();
+  });
+  input?.addEventListener('keydown',e=>{ if (!e.isComposing && e.keyCode!==229 && e.key==='Enter' && !e.shiftKey) {e.preventDefault();commit.click();} });
+  modal.open(); input?.focus();
+  return {modal, actions};
+}
+function addProgressButton(view,parent,model) {
+  return chainAction(parent,'＋进展',()=>chainDialog(view,'记录目前做到哪一步','',async value=>{
+    await view.app.vault.process(model.file,s=>chainAppend(s,'进展',value));
+    inkMotion(view,model.file.path,model.started?'write':'note');
+    view.api.refreshHomeViews();
+  }));
+}
+function renderChainRow(view,parent,model,allowDrag=false) {
+  const {file,steps,archived}=model;
+  const row=parent.createDiv({cls:'dwh-chain-row'});
+  row.dataset.file=file.path;
+  const line=row.createDiv({cls:'ink-row-head'});
+  if(allowDrag){
+    row.title='拖到工作链开始推进';
+    row.draggable=true;
+    row.addEventListener('dragstart',e=>{
+      if(e.target.closest('details,input,textarea')){e.preventDefault();return;}
+      view.paperDrag=file;e.dataTransfer.effectAllowed='move';
+      e.dataTransfer.setData(paperDragType,file.path);
+      const slip=row.createSpan({cls:'ledger-drag-slip',text:file.basename,attr:{'aria-hidden':'true'}});
+      e.dataTransfer.setDragImage(slip,Math.min(30,slip.offsetWidth/2),12);
+      row.ownerDocument.defaultView.requestAnimationFrame(()=>slip.remove());
+      row.classList.add('ink-lift');view.contentEl.classList.add('ink-dragging');
+    });
+    row.addEventListener('dragend',()=>{
+      row.classList.remove('ink-lift');view.paperDrag=null;view.contentEl.classList.remove('ink-dragging');
+      view.contentEl.querySelector('.ink-over')?.classList.remove('ink-over');
+    });
+  }
+  if(model.kind==='待办'){
+    const label=line.createEl('label',{cls:'ledger-tick',attr:{title:'切换完成状态'}});
+    const check=label.createEl('input',{type:'checkbox',attr:{'aria-label':file.basename+'，完成状态'}});
+    check.defaultChecked=model.completed;
+    const mark=label.createSvg('svg',{cls:'ledger-check-ink',attr:{viewBox:'0 0 18 18','aria-hidden':'true'}});
+    mark.createSvg('path',{attr:{d:'M2.5 9.2 Q4.8 11.5 6.6 13.2 Q10.2 8.3 16 3.5',pathLength:'1'}});
+    let saving=false;
+    row.addEventListener('pointerdown',event=>{row.draggable=allowDrag&&!label.contains(event.target);},true);
+    check.addEventListener('change',async()=>{
+      if(saving) return;
+      const desired=check.checked;
+      saving=true;
+      try{
+        await view.app.fileManager.processFrontMatter(file,fm=>{fm['已完成']=desired;});
+        view.api.refreshHomeViews();
+      }catch(error){
+        check.checked=model.completed;
+        new journalOb.Notice('待办状态保存失败：'+error.message);
+      }finally{saving=false;}
+    });
+    check.addEventListener('click',event=>{if(saving) event.preventDefault();});
+  }
+  const title=chainAction(line,'',()=>view.openFile(file));title.classList.add('dwh-chain-title');
+  title.createSpan({cls:'ink-item-text',text:file.basename});
+  if(archived)line.createSpan({cls:'dwh-chain-muted',text:'已收起'});
+  const actions=line.createDiv({cls:'ink-row-actions'});
+  if(!allowDrag) addProgressButton(view,actions,model);
+  const more=chainAction(actions,'•••',()=>paperManage(view,model));more.title='管理'+model.kind;more.setAttribute('aria-label',more.title+'：'+file.basename);
+  if(steps.length)row.createDiv({cls:'dwh-chain-latest',text:steps.at(-1).text});
+  playInkMotion(view,row,file,'note');
+  return row;
+}
+function confirmProgressRemoval(view,model,step,index){
+  chainDialog(view,'删除第 '+(index+1)+' 步进展？',step.text,async ()=>{
+    await view.app.vault.process(model.file,current=>changeChainStep(current,model.source,step,null));
+    view.api.refreshHomeViews();
+  },true);
+}
+function editProgressStep(view,model,step,index){
+  const {modal,actions}=chainDialog(view,'修改第 '+(index+1)+' 步进展',step.text,async value=>{
+    if(value===step.text) return;
+    await view.app.vault.process(model.file,source=>changeChainStep(source,model.source,step,value));
+    view.api.refreshHomeViews();
+  });
+  const remove=chainAction(actions,'删除这一步',()=>{
+    modal.close();
+    confirmProgressRemoval(view,model,step,index);
+  });
+  actions.prepend(remove);
+}
+function addChainManagement(view,detail,model) {
+  const {file,source,steps,archived}=model;
+  const vault=view.app.vault;
+
+  const menu=detail.createDiv({cls:'dwh-chain-actions'});
+  chainAction(menu,'改名',()=>chainDialog(view,'工作链名称',file.basename,async name=>{
+    if (name!==file.basename) await view.app.fileManager.renameFile(file,chainFreePath(vault,file.parent.path,name,file));
+  }));
+  if(!model.started&&!archived) chainAction(menu,'开始推进',()=>startPaperChain(view,model));
+  chainAction(menu,'连接笔记',()=>new MarkdownFileSuggestModal(view.app,async target=>{
+    if (target===file) return;
+    try { const link=view.app.fileManager.generateMarkdownLink(target,file.path); await vault.process(file,s=>chainAppend(s,'关联',link)); }
+    catch(error){new journalOb.Notice(error.message);}
+  }).open());
+  chainAction(menu,archived?'恢复':'收起',()=>view.app.fileManager.processFrontMatter(file,fm=>{fm['收起']=!archived;}));
+  if(model.started&&!archived&&['灵感','待办'].includes(model.kind))chainAction(menu,'移回'+model.kind,()=>view.app.fileManager.processFrontMatter(file,fm=>{delete fm['推进中'];}));
+  chainAction(menu,'删除',()=>chainDialog(view,'将「'+file.basename+'」移到废纸篓？','',()=>vault.trash(file,false),true));
+  for (const [index,step] of steps.entries()) {
+    const item=detail.createDiv({cls:'dwh-chain-history'});
+    item.createSpan({text:step.text});
+    chainAction(item,'关联笔记',()=>new MarkdownFileSuggestModal(view.app,async target=>{
+      try{
+        const link=view.app.fileManager.generateMarkdownLink(target,file.path);
+        if(step.text.includes(link)) return;
+        await vault.process(file,current=>changeChainStep(current,source,step,step.text+' '+link));
+        view.api.refreshHomeViews();
+      }catch(error){new journalOb.Notice(error.message);}
+    }).open());
+    chainAction(item,'编辑',()=>editProgressStep(view,model,step,index));
+    chainAction(item,'删除',()=>confirmProgressRemoval(view,model,step,index));
+  }
+}
+
+function ledgerLine(view,parent,key,placeholder,save,onSaved) {
+  const form=parent.createEl('form',{cls:'ledger-entry'});
+  const input=form.createEl('input',{type:'text',attr:{placeholder,'aria-label':key.startsWith('工作链/') ? key.split('/').at(-1).replace(/\.md$/,'')+'：续写进展' : placeholder,autocomplete:'off'}});
+  const drafts=view.ledgerDrafts ||= new Map();
+  const pending=view.ledgerPending ||= new Set();
+  input.value=drafts.get(key)||'';
+  function updateWidth(){
+    if(key==='灵感'||key==='待办') form.classList.toggle('ledger-growing',Array.from(input.value).length>=4);
+  }
+  updateWidth();
+  input.addEventListener('input',()=>{
+    if(input.value) drafts.set(key,input.value); else drafts.delete(key);
+    updateWidth();
+  });
+  const enter=form.createEl('button',{type:'submit',text:'↵',attr:{title:'保存','aria-label':'保存'+placeholder.replace('…','')}});
+  input.addEventListener('keydown',e=>{
+    if(e.key!=='Enter'||e.isComposing||e.keyCode===229) return;
+    e.preventDefault();form.requestSubmit();
+  });
+  let composing=false;
+  input.addEventListener('compositionstart',()=>{composing=true;});
+  input.addEventListener('compositionend',()=>{composing=false;});
+  form.addEventListener('submit',async e=>{
+    e.preventDefault();
+    if(composing) return;
+    const original=input.value,text=original.trim();
+    if(!text||pending.has(key)){input.focus();return;}
+    pending.add(key);enter.disabled=true;
+    try{
+      await save(text);
+      if(drafts.get(key)===original) drafts.delete(key);
+      if(input.value===original){
+        input.value='';
+        updateWidth();
+        onSaved?.();
+      }
+      view.api.refreshHomeViews();
+    }catch(error){new journalOb.Notice(error.message||String(error));}
+    finally{pending.delete(key);enter.disabled=false;}
+  });
+  return form;
+}
+const paperDragType = 'application/x-dwh-paper-chain';
+
+function inkMotion(view, path, role) {
+  view.paperPulse={path,role,until:Date.now()+1600};
+}
+function playInkMotion(view,el,file,role) {
+  const pulse=view.paperPulse;
+  if(pulse?.path!==file.path || pulse.role!==role || pulse.until<Date.now()) return;
+  el.classList.add('ink-'+role);
+  view.paperPulse=null;
+}
+async function startPaperChain(view,model) {
+  const {file}=model;
+  if(view.inkingFile) return;
+  view.inkingFile=file;
+  try {
+    await view.app.fileManager.processFrontMatter(file,fm=>{
+      if(fm['收起']===true) throw Error('请先恢复已收起的工作链');
+      fm['推进中']=true;
+    });
+    inkMotion(view,file.path,'land');
+    view.api.refreshHomeViews();
+  } finally {view.inkingFile=null;view.paperDrag=null;view.contentEl.classList.remove('ink-dragging');}
+}
+function drawChainResults(view,panel,models,empty,allowDrag=false) {
+  const signature=JSON.stringify(models.map(m=>[m.file.path,m.source]));
+  if(panel.ledgerSignature===signature) return;
+  panel.ledgerSignature=signature;
+  const active=panel.ownerDocument.activeElement;
+  const focused=panel.contains(active)&&active.matches('.ledger-tick input')?active.closest('[data-file]').dataset.file:null;
+  const newlyChecked=new Set(Array.from(panel.querySelectorAll('.ledger-tick input:checked:not([checked])'),
+    input=>input.closest('[data-file]').dataset.file));
+  panel.empty();
+  if (!models.length && empty) panel.createDiv({cls:'dwh-empty',text:empty});
+  for(const model of models){
+    const row=renderChainRow(view,panel,model,allowDrag);
+    if(model.completed && newlyChecked.has(model.file.path)) row.classList.add('ledger-fresh-check');
+  }
+  if(focused) panel.querySelector('[data-file="'+CSS.escape(focused)+'"] .ledger-tick input')?.focus({preventScroll:true});
+}
+function bindPaperDrop(view,target,models) {
+  const valid=e=>view.paperDrag && Array.from(e.dataTransfer?.types || []).includes(paperDragType);
+  target.addEventListener('dragover',e=>{
+    if(!valid(e)) return;
+    e.preventDefault(); e.dataTransfer.dropEffect='move'; target.classList.add('ink-over');
+  });
+  target.addEventListener('dragleave',e=>{if(!target.contains(e.relatedTarget instanceof Node ? e.relatedTarget : null))target.classList.remove('ink-over');});
+  target.addEventListener('drop',async e=>{
+    target.classList.remove('ink-over');
+    if(!valid(e)) return;
+    e.preventDefault();
+    const file=view.paperDrag;
+    const model=models().find(m=>m.file===file && !m.archived);
+    if(model && e.dataTransfer.getData(paperDragType)===file.path){
+      try{await startPaperChain(view,model);}catch(error){new journalOb.Notice(error.message);}
+    }
+  });
+}
+function chainListPanel(view,panel,kind) {
+  panel.createEl('h2',{cls:'dwh-panel__title',text:kind});
+  const list=panel.createDiv({cls:'dwh-chain-list'});
+  (view.chainLists ||= {})[kind]=list;
+  ledgerLine(view,panel,kind,'写下'+kind+'…',async text=>{
+    const folder=chainFolders[kind];
+    await ensureFolderPath(view.app,folder);
+    const file=await view.app.vault.create(chainFreePath(view.app.vault,folder,text),chainNote(text));
+    inkMotion(view,file.path,'note');
+  });
+}
+WorkstationHomeView.prototype.renderInspirations=function(panel){chainListPanel(this,panel,'灵感');};
+WorkstationHomeView.prototype.renderTodos=function(panel){chainListPanel(this,panel,'待办');};
+
+function paperManage(view,model){
+  const modal=new journalOb.Modal(view.app);
+  modal.setTitle(model.file.basename);
+  addChainManagement(view,modal.contentEl,model);
+  // The next action owns its dialog and will re-read the file after edits.
+  modal.contentEl.addEventListener('click',e=>{if(e.target.closest('button'))modal.close();});
+  modal.open();
+}
+
+function paperSearch(view,models){
+  const dlg=new journalOb.Modal(view.app);dlg.setTitle('查找工作链');
+  const box=dlg.contentEl.createEl('input',{type:'search',cls:'paper-search-field',attr:{placeholder:'搜标题或进展（含已收起）','aria-label':'查找工作链'}});
+  const only=dlg.contentEl.createEl('label',{cls:'paper-search-filter'});
+  const check=only.createEl('input',{type:'checkbox'});only.appendText(' 只看已收起');
+  const list=dlg.contentEl.createDiv({cls:'paper-search-results'});
+  const draw=()=>{
+    list.empty();const q=box.value.trim().toLocaleLowerCase();
+    for(const m of models.filter(m=>(!check.checked||m.archived)&&(m.file.basename+'\n'+m.source).toLocaleLowerCase().includes(q))){
+      const item=list.createDiv({cls:'paper-search-item'});
+      chainAction(item,(m.archived?'已收起 · ':'')+m.file.basename,()=>{dlg.close();return view.openFile(m.file);});
+      chainAction(item,'管理',()=>{dlg.close();paperManage(view,m);});
+    }
+    if(!list.childElementCount)list.createDiv({cls:'dwh-empty',text:'没有匹配的工作链'});
+  };
+  box.addEventListener('input',draw);check.addEventListener('change',draw);draw();dlg.open();box.focus();
+}
+
+function releaseTrail(view,trail){
+  if(!trail.renderer) return;
+  view.removeChild(trail.renderer);
+  view.trailRenderers.delete(trail.renderer);
+  trail.renderer=null;
+}
+function drawTrail(view,trail,model){
+  trail.empty();
+  trail.source=model.source;
+  if(!model.steps.length){
+    trail.setAttribute('aria-label','尚未记录进展');
+    return;
+  }
+  trail.setAttribute('aria-label',model.file.basename+'的全部进展');
+  model.steps.forEach((step,index)=>{
+    const item=trail.createEl('li',{cls:'ledger-trail-step'});
+    const last=index===model.steps.length-1;
+    if(last) item.setAttribute('aria-current','step');
+    const edit=()=>editProgressStep(view,model,step,index);
+    const hasMarkup=step.text.includes('[');
+    if(!hasMarkup){
+      const text=item.createEl('button',{type:'button',cls:'ledger-step-text ledger-editable',attr:{title:'点击修改或删除这一步'}});
+      text.createSpan({cls:'ledger-ink-words',text:step.text});
+      text.addEventListener('click',edit);
+      return;
+    }
+    const content=item.createSpan({cls:'ledger-step-text',attr:{title:'点击文字修改，点击链接打开笔记'}});
+    content.addEventListener('click',event=>{
+      if(!event.target.closest('a,button,input,textarea')&&!view.contentEl.ownerDocument.getSelection()?.toString()) edit();
+    });
+    const editLinkStep=item.createEl('button',{type:'button',cls:'ledger-link-edit',text:'修改',attr:{'aria-label':'修改这一步进展'}});
+    editLinkStep.addEventListener('click',edit);
+    if(!trail.renderer){
+      trail.renderer=view.addChild(new journalOb.Component());
+      view.trailRenderers.add(trail.renderer);
+    }
+    journalOb.MarkdownRenderer.render(view.app,step.text,content,model.file.path,trail.renderer)
+      .catch(()=>content.setText(step.text));
+    content.addEventListener('click',e=>{
+      const link=e.target.closest?.('a.internal-link');
+      if(!link) return;
+      e.preventDefault();e.stopPropagation();
+      view.app.workspace.openLinkText(link.dataset.href||link.getAttribute('href'),model.file.path,e.ctrlKey||e.metaKey);
+    },true);
+  });
+}
+function drawPaperBoard(view,host,active){
+  if(!host.querySelector('.paper-board-head')){
+    const head=host.createDiv({cls:'paper-board-head'});
+    for(const label of ['工作链','进展过程','续写进展']) head.createSpan({text:label});
+  }
+  const rows=new Map([...host.querySelectorAll('.paper-chain-line')].map(r=>[r.dataset.file,r]));
+  host.querySelector('.paper-board-empty')?.remove();
+  for(const model of active){
+    const {file,steps}=model;
+    let row=rows.get(file.path);
+    if(!row){
+      row=host.createDiv({cls:'paper-chain-line'});row.dataset.file=file.path;
+      const name=chainAction(row,file.basename,()=>view.openFile(file));
+      name.classList.add('paper-chain-name');
+      const sequence=row.createDiv({cls:'ledger-sequence'});
+      sequence.createEl('ol',{cls:'ledger-trail',attr:{'aria-label':file.basename+'的全部进展'}});
+      ledgerLine(view,sequence,file.path,'接着写…',async text=>{
+        await view.app.vault.process(file,source=>chainAppend(source,'进展',text));
+        inkMotion(view,file.path,'write');
+      });
+      const manage=chainAction(row,'•••',()=>paperManage(view,row.ledgerModel));
+      manage.classList.add('ledger-more');manage.title='管理工作链';manage.setAttribute('aria-label','管理或删除 '+file.basename);
+    }
+    rows.delete(file.path);
+    row.ledgerModel=model;
+    const trail=row.querySelector('.ledger-trail');
+    if(trail.source!==model.source){
+      releaseTrail(view,trail);
+      drawTrail(view,trail,model);
+    }
+    playInkMotion(view,row,file,'land');
+    if(trail.lastElementChild) playInkMotion(view,trail.lastElementChild,file,'write');
+  }
+  for(const row of rows.values()){
+    releaseTrail(view,row.querySelector('.ledger-trail'));
+    row.remove();
+  }
+  if(!active.length) host.createDiv({cls:'paper-board-empty',text:'把灵感或待办拖到这里，或新建一条工作链。'});
+}
+WorkstationHomeView.prototype.renderDocumentLines=function(panel) {
+  const root=this.contentEl||this.containerEl.children[1];root.classList.add('ink-home','paper-overview');
+  root.classList.add('ink-ledger');
+  for(const renderer of this.trailRenderers||[]) this.removeChild(renderer);
+  this.trailRenderers=new Set();
+  const bar=panel.createDiv({cls:'ink-work-heading'});
+  bar.createEl('h2',{cls:'dwh-panel__title',text:'工作链'});
+  let models=[];
+
+  const add=chainAction(bar,'＋',()=>chainDialog(this,'新建工作链','',async value=>{
+    const folder=chainFolders['独立工作链'];
+    await ensureFolderPath(this.app,folder);
+    const file=await this.app.vault.create(chainFreePath(this.app.vault,folder,value),chainNote(value));
+    inkMotion(this,file.path,'land');this.api.refreshHomeViews();
+  }));
+  add.classList.add('ledger-add');
+  add.title='新建工作链';
+  add.setAttribute('aria-label',add.title);
+  const find=chainAction(bar,'查找',()=>paperSearch(this,models));
+  find.classList.add('ledger-search');find.title='查找工作链';find.setAttribute('aria-label',find.title);
+  const diary=chainAction(bar,'日记',()=>this.api.activateJournal());
+  diary.classList.add('ledger-diary');
+  diary.title='打开日记';
+  diary.setAttribute('aria-label',diary.title);
+  const graph=chainAction(bar,'',async()=>{
+    const ws=this.app.workspace;let leaf=ws.getLeavesOfType('graph')[0];
+    if(!leaf){leaf=ws.getLeaf('tab');await leaf.setViewState({type:'graph',active:true});}
+    await ws.revealLeaf(leaf);ws.setActiveLeaf(leaf,{focus:true});
+  });
+  graph.classList.add('ink-graph');graph.title='打开关系图';graph.setAttribute('aria-label','打开关系图');
+  const divider=panel.createDiv({cls:'ledger-divider',attr:{'aria-hidden':'true'}});
+  const board=panel.createDiv({cls:'paper-board'});
+  panel.append(divider);
+  bindPaperDrop(this,panel,()=>models);
+  let revision=0;
+  this.reloadLedger=async()=>{
+    const ticket=++revision;
+    const vault=this.app.vault;
+    const loaded=await Promise.all(vault.getMarkdownFiles().filter(chainKind).map(async file=>{
+      const source=await vault.cachedRead(file);
+      const head=/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source);
+      const fm=head?journalOb.parseYaml(head[1]):{};
+      const kind=chainKind(file);
+      const standalone=kind==='原有工作链'||kind==='独立工作链';
+      return {file,source,steps:chainSteps(source),kind,completed:fm?.['已完成']===true,archived:fm?.['收起']===true,started:standalone||fm?.['推进中']===true};
+    }));
+    if(!panel.isConnected||ticket!==revision)return;
+    models=loaded;
+    models.sort((a,b)=>b.file.stat.mtime-a.file.stat.mtime||a.file.path.localeCompare(b.file.path));
+    drawPaperBoard(this,board,models.filter(m=>m.started&&!m.archived));
+    for(const kind of ['灵感','待办']){
+      const items=models.filter(m=>m.kind===kind&&!m.archived&&!m.started);
+      if(kind==='待办') items.sort((a,b)=>b.file.stat.ctime-a.file.stat.ctime||a.file.path.localeCompare(b.file.path));
+      drawChainResults(this,this.chainLists[kind],items,'还没有'+kind,true);
+    }
+  };
+  this.chainLoad=this.reloadLedger().catch(e=>new journalOb.Notice('工作链读取失败：'+e.message));
+  if(!this.ledgerWatching){
+    this.ledgerWatching=true;
+    const changed=(file,oldPath='')=>{
+      if(!chainKind(file)&&!String(oldPath).startsWith('工作链/')) return;
+      clearTimeout(this.ledgerTimer);
+      this.ledgerTimer=setTimeout(()=>this.api.refreshHomeViews(),180);
+    };
+    for(const event of ['create','modify','delete','rename']) this.registerEvent(this.app.vault.on(event,changed));
+    this.register(()=>clearTimeout(this.ledgerTimer));
+  }
+};
+
+
+
+

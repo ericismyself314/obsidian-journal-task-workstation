@@ -86,3 +86,21 @@ body[data-dwh-mode]:is(:has(.dwh-home), :has(.dwh-journal), :has(.dwh-calendar))
   .dwh-journal__footer { gap: 2px; } .dwh-journal__footer .dwh-btn { padding: 6px; font-size: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { .dwh-journal * { transition: none !important; } }
+
+/* Content-sized diary sections */
+.dwh-journal .journal-writing-field { position:relative; min-width:0; }
+.dwh-journal .journal-writing-field > textarea.dwh-journal__writing {
+  box-sizing:border-box; display:block; width:100%; height:2em; min-height:0; max-height:none;
+  margin:0; padding:3px 0; border:0!important; field-sizing:fixed; overflow:hidden; resize:none;
+  font:400 clamp(16px,1.45vw,20px)/1.85 "DWH WenKai","KaiTi","Microsoft YaHei",serif;
+  letter-spacing:.015em; white-space:pre-wrap; overflow-wrap:break-word;
+}
+.dwh-journal .journal-writing-field > textarea.journal-writing-measure {
+  position:absolute; top:0; left:0; height:0!important; min-height:0!important;
+  visibility:hidden; pointer-events:none; transition:none!important;
+}
+@media (prefers-reduced-motion:no-preference) {
+  .dwh-journal .journal-writing-field > textarea:not(.journal-writing-measure) {
+    transition:height 155ms cubic-bezier(.2,.7,.25,1);
+  }
+}

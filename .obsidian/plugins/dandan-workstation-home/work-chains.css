@@ -1,0 +1,16 @@
+.dwh-chain-list { display:grid; gap:8px; }
+.dwh-chain-row { border-bottom:1px solid var(--jp-border,var(--background-modifier-border)); padding:7px 0 10px; min-width:0; }
+.dwh-chain-row:last-child {border-bottom:0;}
+.dwh-chain-title.dwh-btn {color:inherit; background:none; border:none; box-shadow:none; height:auto; padding:0; font:inherit; font-weight:600; white-space:normal; text-align:left; overflow-wrap:anywhere;}
+.dwh-chain-latest,.dwh-chain-history {white-space:pre-wrap; overflow-wrap:anywhere;}
+.dwh-chain-latest,.dwh-chain-muted {color:var(--jp-muted,var(--text-muted)); font-size:.92em;}
+.dwh-chain-actions,.dwh-chain-history {display:flex; gap:7px; align-items:baseline; flex-wrap:wrap; margin:6px 0;}
+.dwh-chain-actions .dwh-btn,.dwh-chain-history .dwh-btn {font-size:12px; padding:3px 8px;}
+.dwh-chain-actions details[open] {flex:1 1 100%;}
+.dwh-chain-actions summary {cursor:pointer; color:var(--jp-muted,var(--text-muted));font-size:12px;}
+.dwh-chain-history span {flex:1 1 55%;}
+.dwh-chain-capture,.dwh-chain-editor {width:100%;}
+.dwh-chain-actions input[type=search] {flex:1 1 145px; min-width:0;}
+body:has(.dwh-home) .dwh-home--paged:has(.dwh-chain-list) {overflow:auto;}
+body:has(.dwh-home) .dwh-home--paged .dwh-panel:has(.dwh-chain-list) {max-height:none;overflow:visible;}
+

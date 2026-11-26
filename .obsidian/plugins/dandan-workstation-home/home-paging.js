@@ -21,6 +21,7 @@ function openHomePaper(view, title, text, save) {
 }
 WorkstationHomeView.prototype.setupPaperPaging = function () {
   const root = this.contentEl || this.containerEl.children[1];
+  if(root.classList.contains('ink-home')) return;
   this.paperState ||= {};
   const height = root.clientHeight || window.innerHeight;
   const compact = root.clientWidth >= 900 && height >= 680;
@@ -33,7 +34,7 @@ WorkstationHomeView.prototype.setupPaperPaging = function () {
     ['todos','.dwh-todos','.dwh-todo__list','.dwh-todo'],
     ['work','.dwh-document-lines',null,'.dwh-document-line']
   ]) {
-    const panel = root.querySelector(panelSelector); if (!panel) continue;
+    const panel = root.querySelector(panelSelector); if (!panel || panel.querySelector('.dwh-chain-list')) continue;
     let list = listSelector ? panel.querySelector(listSelector) : panel.querySelector('.dwh-paper-work-list');
     if (!list && key === 'work') {
       list = panel.createDiv({cls:'dwh-paper-work-list'});
@@ -146,8 +147,11 @@ const beforePaperRefresh=WorkstationHomePlugin.prototype.refreshHomeViews;
 WorkstationHomePlugin.prototype.refreshHomeViews=function(){
   const views=this.app.workspace.getLeavesOfType(VIEW_TYPE_WORKSTATION_HOME);
   for(const leaf of views){
+    if(leaf.isDeferred || typeof leaf.view.render!=='function') continue;
     const view=leaf.view,root=view.contentEl||view.containerEl.children[1];
     const active=document.activeElement;
+    if(view.paperDrag && !view.inkingFile) continue;
+    if(view.reloadLedger){view.chainLoad=view.reloadLedger().catch(error=>new journalOb.Notice(error.message));continue;}
     if(root.contains(active)&&active?.matches('input,textarea')){
       if(!view.paperPendingRefresh){view.paperPendingRefresh=true;active.addEventListener('blur',()=>setTimeout(()=>{view.paperPendingRefresh=false;view.render();},0),{once:true});}
     } else view.render();
