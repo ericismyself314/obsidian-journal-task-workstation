@@ -1,7 +1,7 @@
 {
   "name": "dandan-workstation-home",
-  "version": "0.4.0",
-  "description": "纸面风格的个人工作台：灵感、待办、工作进展、自动翻纸首页与六项日记，支持白色和黑色主题。",
+  "version": "0.5.0",
+  "description": "黑纸手绘风格的 Obsidian 工作站，用便签记录灵感和待办，沿工作链查看进展，在日历里写日记。",
   "main": "main.js",
   "license": "MIT",
   "scripts": {

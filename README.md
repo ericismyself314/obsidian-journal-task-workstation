@@ -1,4 +1,4 @@
-# 个人工作台
+# Obsidian 日记与任务工作站
 
 一张黑纸工作台，用来随手记灵感、勾掉待办，也能沿着工作链找回上次做到哪一步。「灵感」和「待办」并排放在两张便签上，沿用日记页的纸纹、斜胶带和卷角。纸面会随内容增减，窄窗口下自动调整布局。
 
@@ -12,10 +12,10 @@
 
 ## 安装或升级
 
-1. 下载本仓库 main 分支的 ZIP，解压后进入其中的隐藏目录 `.obsidian`。
+1. 从[最新发布](https://github.com/ericismyself314/obsidian-journal-task-workstation/releases/latest)下载工作站安装包并解压。
 2. 将 `plugins/dandan-workstation-home` 放入你的仓库 `.obsidian/plugins/`。升级时只覆盖安装包中的程序文件，保留已有 `data.json`、`appearance-preferences.json` 和 `journal-drafts.json`。
 3. 将 `snippets/` 中的 CSS 放入 `.obsidian/snippets/`，在「设置 → 外观 → CSS 代码片段」启用 `codex-homepage` 和 `beige-workstation`。
-4. 在「设置 → 第三方插件」启用「个人工作台」，重启或重新加载 Obsidian。
+4. 在「设置 → 第三方插件」启用「Obsidian 日记与任务工作站」，重启或重新加载 Obsidian。
 
 命令面板可打开工作台、纸张日记和日记日历。默认日记文件夹为 `日记`；可以在插件设置中修改。
 
